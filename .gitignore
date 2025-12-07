@@ -17,6 +17,3 @@ Cargo.lock
 *.so
 .env
 .env.local
-
-# Cargo
-.cargo/
