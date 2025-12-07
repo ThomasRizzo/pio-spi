@@ -83,24 +83,34 @@ spi.transfer(msg);  // Returns None
 
 ### PIO Program Structure
 
-The program uses explicit PULL/PUSH blocking instructions to ensure clean FIFO state:
+The program uses bit-level loops with CLK toggling during both write and read phases:
 
 ```pio
 .wrap_target
-  pull block          # Wait for first 32-bit TX FIFO entry
-  out pins, 32        # Shift out 32 bits to MOSI
-  pull block          # Wait for second 32-bit TX FIFO entry
-  out pins, 18        # Shift out 18 more bits (50 total)
-  # 14 bits remain in OSR but are discarded at wrap
+  # Write phase: 50 bits total (two 25-bit loops)
+  set y, 24           # Counter for first 25 bits
+  out_loop_1:
+    out pins, 1       # Shift 1 bit to MOSI
+    set pins, 1       # CLK high
+    set pins, 0       # CLK low
+    jmp y--, out_loop_1
   
-  set y, 24           # Counter for first 25 read bits
+  set y, 24           # Counter for next 25 bits
+  out_loop_2:
+    out pins, 1
+    set pins, 1
+    set pins, 0
+    jmp y--, out_loop_2
+  
+  # Read phase: 50 bits total (two 25-bit loops)
+  set y, 24
   in_loop_1:
     set pins, 1       # CLK high
     in pins, 1        # Sample MISO
     set pins, 0       # CLK low
     jmp y--, in_loop_1
   
-  set y, 24           # Counter for next 25 read bits
+  set y, 24
   in_loop_2:
     set pins, 1
     in pins, 1
@@ -113,16 +123,16 @@ The program uses explicit PULL/PUSH blocking instructions to ensure clean FIFO s
 
 ### Register Usage
 
-- **Y register**: Loop counter (0-24 for 25 iterations in read loops)
-- **OSR (Output Shift Register)**: Holds TX data, explicitly filled via PULL block
-- **ISR (Input Shift Register)**: Holds RX data, explicitly pushed via PUSH block
+- **Y register**: Loop counter (0-24 for 25 iterations per loop)
+- **OSR (Output Shift Register)**: Holds TX data, auto-fills from TX FIFO as bits are shifted
+- **ISR (Input Shift Register)**: Holds RX data, auto-pushed to RX FIFO when full
 
 ### FIFO Configuration
 
-- **TX FIFO**: No auto-fill; explicit PULL block waits for data
-- **RX FIFO**: No auto-fill; explicit PUSH block sends result
+- **TX FIFO**: Auto-fill enabled; refills OSR when exhausted during OUT shifts
+- **RX FIFO**: Auto-fill enabled; pushes ISR when 32 bits accumulated
 - **Mode**: Duplex (separate TX/RX)
-- **Benefit**: No residual bits carry over between transfers - perfect for DMA
+- **Timing**: SPI Mode 0 (CPOL=0, CPHA=0) - clock toggles for each bit
 
 ## Clock Divider
 

@@ -30,13 +30,12 @@
 //! # PIO Program
 //!
 //! The program uses 32 instructions (well under 64-instruction limit):
-//! - Explicit PULL block instructions (blocking until FIFO has data)
-//! - Unrolled OUT instructions for clean 32+18=50 bit write (no leftover state)
-//! - Two 25-bit read loops with SET/IN for CLK toggling and MISO sampling
-//! - PUSH block for RX result
+//! - Two 25-bit write loops (50 bits total) with CLK toggling
+//! - Two 25-bit read loops (50 bits total) with CLK toggling
+//! - PUSH block for RX FIFO synchronization
 //!
-//! Uses Y register as loop counter. PULL/PUSH blocks ensure no residual bits
-//! from previous transfers contaminate the next one - clean state for DMA integration.
+//! OSR auto-fill handles FIFO refilling during the write phase when bits are shifted.
+//! Uses Y register as loop counter. Implements SPI Mode 0 timing (CPOL=0, CPHA=0).
 
 use embassy_rp::peripherals::PIO0;
 use embassy_rp::pio::{Config, LoadedProgram, Pio, Pin, StateMachine};
@@ -91,11 +90,11 @@ impl<'d> PioSpiMaster<'d> {
         let clk_val = (config.clk_div as u32 - 1).to_fixed();
         cfg.clock_divider = clk_val;
         
-        // Configure shift registers with explicit PULL/PUSH control
-        // PULL block will wait for FIFO data, ensuring clean state between transfers
-        // No auto-fill - relies on explicit PULL/PUSH instructions in PIO program
-        cfg.shift_out.auto_fill = false;
-        cfg.shift_in.auto_fill = false;
+        // Configure shift registers with auto-fill
+        // Out shift register auto-fills from TX FIFO when exhausted during bit shifting
+        // In shift register auto-pushes to RX FIFO when 32 bits accumulated
+        cfg.shift_out.auto_fill = true;
+        cfg.shift_in.auto_fill = true;
         
         // Apply configuration and enable
         sm.set_config(&cfg);
@@ -108,9 +107,9 @@ impl<'d> PioSpiMaster<'d> {
     ///
     /// # Arguments
     /// * `msg_word` - 64-bit message containing:
-    ///   - Bits [49:0]: 50-bit data to shift out on MOSI
+    ///   - Bits [49:0]: 50-bit data to shift out on MOSI with CLK toggling
     ///   - Bit 50: Read flag (1 = also read response, 0 = write-only)
-    ///   - Bits [63:51]: Padding (will be ignored)
+    ///   - Bits [63:51]: Padding (will be shifted out but ignored by slave)
     ///
     /// # Returns
     /// * `Some(u64)` - If read flag was set, the 50-bit response (padded to u64)
@@ -118,20 +117,18 @@ impl<'d> PioSpiMaster<'d> {
     ///
     /// # Behavior
     /// 1. Extracts the 50-bit data and read flag from the message word
-    /// 2. Pushes two 32-bit words to TX FIFO:
-    ///    - First push: lower 32 bits (bits [31:0] of data)
-    ///    - Second push: upper 32 bits (bits [49:18] of data + padding)
-    /// 3. PIO PULL blocks wait for each FIFO entry:
-    ///    - First PULL: shifts out 32 bits to MOSI
-    ///    - Second PULL: shifts out 18 bits to MOSI (50 total, fresh state)
-    /// 4. PIO shifts in 50 bits from MISO during read phase
-    /// 5. Pulls 50-bit result from RX FIFO
-    /// 6. Returns the data only if read flag was set
+    /// 2. Pushes two 32-bit words to TX FIFO
+    /// 3. PIO write phase: Shifts out 50 bits to MOSI while toggling CLK
+    ///    - CLK pattern for each bit: low → high (setup) → low (sample)
+    ///    - Auto-fill refills OSR from TX FIFO as bits are shifted
+    /// 4. PIO read phase: Shifts in 50 bits from MISO while toggling CLK
+    /// 5. PIO pushes 50-bit result to RX FIFO
+    /// 6. Host reads result and returns if read flag was set
     ///
     /// # Notes
-    /// - Uses explicit PULL/PUSH instructions to ensure clean FIFO state between transfers
-    /// - No residual bits from previous transfer affect the next one
-    /// - Suitable for DMA-based FIFO loading in future versions
+    /// - Implements SPI Mode 0 timing (CPOL=0, CPHA=0)
+    /// - Clock toggled for every bit shifted
+    /// - Auto-fill handles FIFO refilling during operation
     pub fn transfer(&mut self, msg_word: u64) -> Option<u64> {
         // Extract read flag from bit 50
         let read_flag = (msg_word >> 50) & 1 == 1;
@@ -164,22 +161,24 @@ impl<'d> PioSpiMaster<'d> {
 
 /// Generates the PIO program for half-duplex SPI
 /// 
-/// Uses explicit PULL/PUSH instructions (blocking) to ensure clean FIFO state between transfers.
-/// No auto-fill - each cycle starts with fresh FIFO data via PULL block.
+/// Uses explicit bit-level shifting with CLK toggling during both write and read phases.
+/// OSR auto-fill handles refilling from TX FIFO as bits are shifted.
 /// 
 /// Program flow:
-/// 1. PULL block first 32-bit word from TX FIFO
-/// 2. Shift out 32 bits to MOSI
-/// 3. PULL block second 32-bit word from TX FIFO
-/// 4. Shift out 18 bits to MOSI (50 bits total written)
-/// 5. Read phase: shift in 50 bits from MISO while toggling CLK
-/// 6. PUSH block 50-bit result to RX FIFO
+/// 1. Write phase: Two 25-bit loops (50 bits total)
+///    - Shift 1 bit from OSR to MOSI
+///    - Toggle CLK: high → low
+///    - Auto-fill refills OSR when exhausted
+/// 2. Read phase: Two 25-bit loops (50 bits total)
+///    - Toggle CLK: high → low
+///    - Shift 1 bit from MISO to ISR
+/// 3. PUSH block 50-bit result to RX FIFO
 /// 
-/// The 14 bits remaining in OSR after step 4 are discarded at wrap,
-/// ensuring no residual data affects the next transfer.
+/// Clock timing: CLK goes high, bit is sampled/driven, CLK goes low
+/// This is SPI Mode 0 timing (CPOL=0, CPHA=0)
 /// 
 /// Pin mapping:
-/// - SET pins[0]: CLK (output, toggled during read phase)
+/// - SET pins[0]: CLK (output, toggled each bit)
 /// - OUT pins[0]: MOSI (output, shifted during write phase)
 /// - IN pins[0]: MISO (input, sampled during read phase)
 fn get_pio_program() -> pio::Program<32> {
@@ -188,30 +187,38 @@ fn get_pio_program() -> pio::Program<32> {
     let prg = pio_asm!(
         ".wrap_target",
         
-        // Write phase: explicitly pull 64 bits (50 data + 14 padding) and shift out 50 bits
-        // PULL blocks until host provides data via TX FIFO
-        "pull block",                  // Pull first 32 bits to OSR
-        "out pins, 32",                // Shift out all 32 bits to MOSI
-        "pull block",                  // Pull next 32 bits to OSR
-        "out pins, 18",                // Shift out 18 bits (50 total written)
-        // Note: 14 bits remain in OSR at wrap, but are discarded
-        // Next cycle's PULL block will refill OSR with fresh data
+        // Write phase: shift out 50 bits with CLK toggling
+        // Two 25-bit loops (Y counter can only reach 31)
+        "set y, 24",                   // Counter for first 25 bits
+        "out_loop_1:",
+        "out pins, 1",                 // Shift 1 bit to MOSI
+        "set pins, 1",                 // CLK high
+        "set pins, 0",                 // CLK low
+        "jmp y--, out_loop_1",
+        
+        // Second 25-bit loop (bits 25-49)
+        "set y, 24",
+        "out_loop_2:",
+        "out pins, 1",                 // Shift 1 bit to MOSI
+        "set pins, 1",                 // CLK high
+        "set pins, 0",                 // CLK low
+        "jmp y--, out_loop_2",
         
         // Read phase: shift in 50 bits with CLK toggling
-        // Use Y as counter for 50 iterations: loop 25 times twice
-        "set y, 24",                   // First loop: 25 bits
+        // Two 25-bit loops
+        "set y, 24",                   // Counter for first 25 bits
         "in_loop_1:",
         "set pins, 1",                 // CLK high
         "in pins, 1",                  // Shift in from MISO
         "set pins, 0",                 // CLK low
         "jmp y--, in_loop_1",
         
-        // Second loop: 25 more bits
+        // Second 25-bit loop (bits 25-49)
         "set y, 24",
         "in_loop_2:",
-        "set pins, 1",
-        "in pins, 1",
-        "set pins, 0",
+        "set pins, 1",                 // CLK high
+        "in pins, 1",                  // Shift in from MISO
+        "set pins, 0",                 // CLK low
         "jmp y--, in_loop_2",
         
         // Push 50-bit result to RX FIFO (blocking)

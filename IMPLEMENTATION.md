@@ -27,22 +27,32 @@ This library implements a **half-duplex SPI master** using the RP2350's PIO (Pro
 
 ## PIO Program Structure
 
-The program uses 32 instructions total with explicit PULL/PUSH blocking:
+The program uses 32 instructions total with bit-level shifting and CLK toggling:
 
 ```
 .wrap_target
 
-  pull block               // Wait for first 32-bit TX FIFO word
-  out pins, 32            // Shift out 32 bits to MOSI
-  pull block               // Wait for second 32-bit TX FIFO word
-  out pins, 18            // Shift out 18 more bits (50 total)
-  // 14 bits remain in OSR at wrap - discarded, clean state for next transfer
+  [Write Phase 1: 25 bits]
+  set y, 24
+  out_loop_1:
+    out pins, 1           // Shift 1 bit to MOSI
+    set pins, 1           // CLK high (setup time)
+    set pins, 0           // CLK low (sample time)
+    jmp y--, out_loop_1
+
+  [Write Phase 2: 25 bits]
+  set y, 24
+  out_loop_2:
+    out pins, 1
+    set pins, 1
+    set pins, 0
+    jmp y--, out_loop_2
 
   [Read Phase 1: 25 bits]
   set y, 24
   in_loop_1:
     set pins, 1           // CLK high
-    in pins, 1            // Sample MISO
+    in pins, 1            // Sample MISO bit
     set pins, 0           // CLK low
     jmp y--, in_loop_1
 
@@ -59,19 +69,19 @@ The program uses 32 instructions total with explicit PULL/PUSH blocking:
 .wrap
 ```
 
-### Key Design: PULL Block Blocking
+### Key Design Features
 
-- `PULL block`: Pauses PIO execution until TX FIFO has data
-- This ensures clean synchronization between host writes and PIO execution
-- No auto-fill means no residual bits from previous transfers
-- Perfect for future DMA integration - DMA writes to FIFO, PIO PULL blocks until ready
+- **Bit-level timing**: CLK toggles for every bit (SPI Mode 0)
+- **Auto-fill**: OSR auto-refills from TX FIFO as bits are shifted out
+- **Synchronous reads**: CLK high sets up, CLK low samples (MISO timing)
+- **50-bit transfers**: Two 25-bit loops (Y counter max is 31)
 
 ## FIFO Configuration
 
 - **Mode**: Duplex (separate TX and RX)
-- **Auto-fill**: **DISABLED** - uses explicit PULL/PUSH blocking
-- **TX Management**: PULL block instructions wait for FIFO data
-- **RX Management**: PUSH block instruction writes result when ready
+- **Auto-fill TX**: Enabled - OSR auto-refills from TX FIFO when exhausted during OUT shifts
+- **Auto-fill RX**: Enabled - ISR auto-pushes to RX FIFO when 32 bits are accumulated
+- **Synchronization**: Host must have data in TX FIFO before PIO write phase completes
 
 ### Data Flow
 
