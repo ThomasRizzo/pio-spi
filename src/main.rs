@@ -20,17 +20,20 @@ async fn main(_spawner: Spawner) {
 
     let p = embassy_rp::init(Default::default());
 
-    // Initialize PIO with pins
-    let Pio {
-        mut common,
-        sm0,
-        ..
-    } = Pio::new(p.PIO0, Irqs);
+    // Initialize PIO with pins  
+    // SAFETY: The Pio is kept alive by main's infinite loop and never dropped.
+    let mut pio_owned = Pio::new(p.PIO0, Irqs);
+    let pio: &'static mut Pio<'static, PIO0> = unsafe {
+        core::mem::transmute(&mut pio_owned)
+    };
+    
+    // To prevent pio_owned from being dropped, we deliberately leak it
+    core::mem::forget(pio_owned);
 
     // Create PIO pins from GPIO pins
-    let clk_pin = common.make_pio_pin(p.PIN_2);
-    let mosi_pin = common.make_pio_pin(p.PIN_3);
-    let miso_pin = common.make_pio_pin(p.PIN_4);
+    let clk_pin = pio.common.make_pio_pin(p.PIN_2);
+    let mosi_pin = pio.common.make_pio_pin(p.PIN_3);
+    let miso_pin = pio.common.make_pio_pin(p.PIN_4);
 
     // Create SPI configuration
     let config = SpiMasterConfig {
@@ -39,8 +42,7 @@ async fn main(_spawner: Spawner) {
 
     // Create SPI master
     let mut spi = PioSpiMaster::new(
-        &mut Pio { common, sm0, ..Default::default() },
-        sm0,
+        pio,
         &clk_pin,
         &mosi_pin,
         &miso_pin,

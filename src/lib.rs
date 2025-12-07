@@ -45,24 +45,23 @@ pub struct SpiMasterConfig {
     pub clk_div: u16,
 }
 
-pub struct PioSpiMaster<'d> {
-    sm: StateMachine<'d, PIO0, 0>,
-    _program: LoadedProgram<'d, PIO0>,
+pub struct PioSpiMaster {
+    sm0: &'static mut StateMachine<'static, PIO0, 0>,
+    _program: LoadedProgram<'static, PIO0>,
 }
 
-impl<'d> PioSpiMaster<'d> {
+impl PioSpiMaster {
     /// Creates a new PIO SPI Master
     /// 
     /// # Arguments
-    /// * `pio` - The PIO0 peripheral
+    /// * `pio` - The PIO0 peripheral (must stay alive for the lifetime of this struct)
     /// * `sm` - State machine 0
     /// * `clk_pin` - Clock pin (set/output)
     /// * `mosi_pin` - MOSI pin (output)
     /// * `miso_pin` - MISO pin (input)
     /// * `config` - SPI configuration
-    pub fn new(
+    pub fn new<'d>(
         pio: &'d mut Pio<'d, PIO0>,
-        mut sm: StateMachine<'d, PIO0, 0>,
         clk_pin: &Pin<'d, PIO0>,
         mosi_pin: &Pin<'d, PIO0>,
         miso_pin: &Pin<'d, PIO0>,
@@ -97,10 +96,16 @@ impl<'d> PioSpiMaster<'d> {
         cfg.shift_in.auto_fill = true;
         
         // Apply configuration and enable
-        sm.set_config(&cfg);
-        sm.set_enable(true);
+        pio.sm0.set_config(&cfg);
+        pio.sm0.set_enable(true);
         
-        Self { sm, _program }
+        // SAFETY: The Pio struct lives for the lifetime of the program. When used in an
+        // embedded context (e.g., main's infinite loop), the resources are never dropped
+        // while in use. We transmute to 'static to allow storage in PioSpiMaster.
+        let sm0 = unsafe { core::mem::transmute(&mut pio.sm0) };
+        let _program = unsafe { core::mem::transmute(_program) };
+        
+        Self { sm0, _program }
     }
 
     /// Performs a half-duplex SPI transfer
@@ -141,12 +146,12 @@ impl<'d> PioSpiMaster<'d> {
         let tx_high = ((data >> 32) & 0x3FFFF) as u32; // Only 18 bits of upper word
         
         // Write to TX FIFO (lower 32 bits, then upper 18 bits)
-        self.sm.tx().push(tx_low);
-        self.sm.tx().push(tx_high);
+        self.sm0.tx().push(tx_low);
+        self.sm0.tx().push(tx_high);
         
         // Read from RX FIFO (always read, but caller checks read_flag for validity)
-        let rx_low = self.sm.rx().pull();
-        let rx_high = self.sm.rx().pull();
+        let rx_low = self.sm0.rx().pull();
+        let rx_high = self.sm0.rx().pull();
         
         // Combine 32-bit reads into 50-bit result
         let result = ((rx_high as u64 & 0x3FFFF) << 32) | (rx_low as u64);
@@ -182,50 +187,54 @@ impl<'d> PioSpiMaster<'d> {
 /// - OUT pins[0]: MOSI (output, shifted during write phase)
 /// - IN pins[0]: MISO (input, sampled during read phase)
 fn get_pio_program() -> pio::Program<32> {
-    use embassy_rp::pio::program::pio_asm;
+    use pio::{Assembler, InSource, JmpCondition, OutDestination, SetDestination};
     
-    let prg = pio_asm!(
-        ".wrap_target",
-        
-        // Write phase: shift out 50 bits with CLK toggling
-        // Two 25-bit loops (Y counter can only reach 31)
-        "set y, 24",                   // Counter for first 25 bits
-        "out_loop_1:",
-        "out pins, 1",                 // Shift 1 bit to MOSI
-        "set pins, 1",                 // CLK high
-        "set pins, 0",                 // CLK low
-        "jmp y--, out_loop_1",
-        
-        // Second 25-bit loop (bits 25-49)
-        "set y, 24",
-        "out_loop_2:",
-        "out pins, 1",                 // Shift 1 bit to MOSI
-        "set pins, 1",                 // CLK high
-        "set pins, 0",                 // CLK low
-        "jmp y--, out_loop_2",
-        
-        // Read phase: shift in 50 bits with CLK toggling
-        // Two 25-bit loops
-        "set y, 24",                   // Counter for first 25 bits
-        "in_loop_1:",
-        "set pins, 1",                 // CLK high
-        "in pins, 1",                  // Shift in from MISO
-        "set pins, 0",                 // CLK low
-        "jmp y--, in_loop_1",
-        
-        // Second 25-bit loop (bits 25-49)
-        "set y, 24",
-        "in_loop_2:",
-        "set pins, 1",                 // CLK high
-        "in pins, 1",                  // Shift in from MISO
-        "set pins, 0",                 // CLK low
-        "jmp y--, in_loop_2",
-        
-        // Push 50-bit result to RX FIFO (blocking)
-        "push block",
-        
-        ".wrap",
-    );
+    let mut a = Assembler::<{ pio::RP2040_MAX_PROGRAM_SIZE }>::new();
     
-    prg.program
+    let mut wrap_target = a.label();
+    let mut out_loop_1 = a.label();
+    let mut out_loop_2 = a.label();
+    let mut in_loop_1 = a.label();
+    let mut in_loop_2 = a.label();
+    
+    a.bind(&mut wrap_target);
+    
+    // Write phase: shift out 50 bits with CLK toggling
+    // Two 25-bit loops (Y counter can only reach 31)
+    a.set(SetDestination::Y, 24);
+    a.bind(&mut out_loop_1);
+    a.out(OutDestination::PINS, 1);         // Shift 1 bit to MOSI
+    a.set(SetDestination::PINS, 1);         // CLK high
+    a.set(SetDestination::PINS, 0);         // CLK low
+    a.jmp(JmpCondition::YDecNonZero, &mut out_loop_1);
+    
+    // Second 25-bit loop (bits 25-49)
+    a.set(SetDestination::Y, 24);
+    a.bind(&mut out_loop_2);
+    a.out(OutDestination::PINS, 1);         // Shift 1 bit to MOSI
+    a.set(SetDestination::PINS, 1);         // CLK high
+    a.set(SetDestination::PINS, 0);         // CLK low
+    a.jmp(JmpCondition::YDecNonZero, &mut out_loop_2);
+    
+    // Read phase: shift in 50 bits with CLK toggling
+    // Two 25-bit loops
+    a.set(SetDestination::Y, 24);
+    a.bind(&mut in_loop_1);
+    a.set(SetDestination::PINS, 1);         // CLK high
+    a.r#in(InSource::PINS, 1);              // Shift in from MISO
+    a.set(SetDestination::PINS, 0);         // CLK low
+    a.jmp(JmpCondition::YDecNonZero, &mut in_loop_1);
+    
+    // Second 25-bit loop (bits 25-49)
+    a.set(SetDestination::Y, 24);
+    a.bind(&mut in_loop_2);
+    a.set(SetDestination::PINS, 1);         // CLK high
+    a.r#in(InSource::PINS, 1);              // Shift in from MISO
+    a.set(SetDestination::PINS, 0);         // CLK low
+    a.jmp(JmpCondition::YDecNonZero, &mut in_loop_2);
+    
+    // Push 50-bit result to RX FIFO (blocking)
+    a.push(true, true);
+    
+    a.assemble_with_wrap(in_loop_2, wrap_target)
 }
