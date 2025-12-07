@@ -1,42 +1,67 @@
-//! This example test the RP Pico on board LED.
-//!
-//! It does not work with the RP Pico W board. See `blinky_wifi.rs`.
-
 #![no_std]
 #![no_main]
 
-use defmt::*;
+use defmt::info;
 use embassy_executor::Spawner;
-use embassy_rp::gpio;
+use embassy_rp::peripherals::PIO0;
+use embassy_rp::pio::Pio;
+use embassy_rp::bind_interrupts;
 use embassy_time::Timer;
-use gpio::{Level, Output};
+use pio_spi::{PioSpiMaster, SpiMasterConfig};
 use {defmt_rtt as _, panic_probe as _};
 
-// Program metadata for `picotool info`.
-// This isn't needed, but it's recomended to have these minimal entries.
-#[unsafe(link_section = ".bi_entries")]
-#[used]
-pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
-    embassy_rp::binary_info::rp_program_name!(c"Blinky Example"),
-    embassy_rp::binary_info::rp_program_description!(
-        c"This example tests the RP Pico on board LED, connected to gpio 25"
-    ),
-    embassy_rp::binary_info::rp_cargo_version!(),
-    embassy_rp::binary_info::rp_program_build_attribute!(),
-];
+bind_interrupts!(struct Irqs {
+    PIO0_IRQ_0 => embassy_rp::pio::InterruptHandler<PIO0>;
+});
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
+    info!("PIO SPI Example Starting");
+
     let p = embassy_rp::init(Default::default());
-    let mut led = Output::new(p.PIN_25, Level::Low);
+
+    // Initialize PIO with pins
+    let Pio {
+        mut common,
+        sm0,
+        ..
+    } = Pio::new(p.PIO0, Irqs);
+
+    // Create PIO pins from GPIO pins
+    let clk_pin = common.make_pio_pin(p.PIN_2);
+    let mosi_pin = common.make_pio_pin(p.PIN_3);
+    let miso_pin = common.make_pio_pin(p.PIN_4);
+
+    // Create SPI configuration
+    let config = SpiMasterConfig {
+        clk_div: 8, // Clock divider for SPI clock rate
+    };
+
+    // Create SPI master
+    let mut spi = PioSpiMaster::new(
+        &mut Pio { common, sm0, ..Default::default() },
+        sm0,
+        &clk_pin,
+        &mosi_pin,
+        &miso_pin,
+        config,
+    );
 
     loop {
-        info!("led on!");
-        led.set_high();
-        Timer::after_millis(250).await;
+        info!("Running");
+        
+        // Example: Send 50-bit message with read flag set
+        // Message format:
+        // - Bits [49:0]: 50-bit data to transmit
+        // - Bit 50: read flag (1 = read 50-bit response, 0 = write only)
+        let msg = 0x0000000001234567_89 | (1 << 50);
+        
+        if let Some(response) = spi.transfer(msg) {
+            info!("Received: 0x{:012x}", response);
+        } else {
+            info!("No response (read flag not set)");
+        }
 
-        info!("led off!");
-        led.set_low();
-        Timer::after_millis(250).await;
+        Timer::after_millis(1000).await;
     }
 }
