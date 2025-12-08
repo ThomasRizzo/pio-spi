@@ -45,12 +45,12 @@ pub struct SpiMasterConfig {
     pub clk_div: u16,
 }
 
-pub struct PioSpiMaster {
-    sm0: &'static mut StateMachine<'static, PIO0, 0>,
-    _program: LoadedProgram<'static, PIO0>,
+pub struct PioSpiMaster<'d> {
+    sm0: &'d mut StateMachine<'d, PIO0, 0>,
+    _program: LoadedProgram<'d, PIO0>,
 }
 
-impl PioSpiMaster {
+impl<'d> PioSpiMaster<'d> {
     /// Creates a new PIO SPI Master
     /// 
     /// # Arguments
@@ -60,7 +60,7 @@ impl PioSpiMaster {
     /// * `mosi_pin` - MOSI pin (output)
     /// * `miso_pin` - MISO pin (input)
     /// * `config` - SPI configuration
-    pub fn new<'d>(
+    pub fn new(
         pio: &'d mut Pio<'d, PIO0>,
         clk_pin: &Pin<'d, PIO0>,
         mosi_pin: &Pin<'d, PIO0>,
@@ -99,13 +99,10 @@ impl PioSpiMaster {
         pio.sm0.set_config(&cfg);
         pio.sm0.set_enable(true);
         
-        // SAFETY: The Pio struct lives for the lifetime of the program. When used in an
-        // embedded context (e.g., main's infinite loop), the resources are never dropped
-        // while in use. We transmute to 'static to allow storage in PioSpiMaster.
-        let sm0 = unsafe { core::mem::transmute(&mut pio.sm0) };
-        let _program = unsafe { core::mem::transmute(_program) };
-        
-        Self { sm0, _program }
+        Self {
+            sm0: &mut pio.sm0,
+            _program,
+        }
     }
 
     /// Performs a half-duplex SPI transfer
