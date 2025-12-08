@@ -21,42 +21,84 @@ async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
     // Initialize PIO with pins
-    let mut pio_owned = Pio::new(p.PIO0, Irqs);
+    let mut pio = Pio::new(p.PIO0, Irqs);
 
     // Create PIO pins from GPIO pins
-    let clk_pin = pio_owned.common.make_pio_pin(p.PIN_2);
-    let mosi_pin = pio_owned.common.make_pio_pin(p.PIN_3);
-    let miso_pin = pio_owned.common.make_pio_pin(p.PIN_4);
+    let clk_pin = pio.common.make_pio_pin(p.PIN_2);
+    let mosi_pin = pio.common.make_pio_pin(p.PIN_3);
+    let miso_pin = pio.common.make_pio_pin(p.PIN_4);
 
-    // Create SPI configuration
-    let config = SpiMasterConfig {
-        clk_div: 8, // Clock divider for SPI clock rate
-    };
+    // Demo 1: 16-bit transfer
+    {
+        info!("=== 16-bit Transfer Demo ===");
+        let config = SpiMasterConfig {
+            clk_div: 8,
+            message_size: 16,
+        };
 
-    // Create SPI master
-    let mut spi = PioSpiMaster::new(
-        &mut pio_owned,
-        &clk_pin,
-        &mosi_pin,
-        &miso_pin,
-        config,
-    );
+        let mut spi = PioSpiMaster::new(
+            &mut pio,
+            &clk_pin,
+            &mosi_pin,
+            &miso_pin,
+            config,
+        );
 
+        let data = 0xABCD_u16 as u64;
+        info!("Sending: 0x{:04x}", data);
+        let response = spi.transfer(data);
+        info!("Received: 0x{:04x}", response & 0xFFFF);
+        Timer::after_millis(100).await;
+    }
+
+    // Demo 2: 50-bit transfer
+    {
+        info!("=== 50-bit Transfer Demo ===");
+        let config = SpiMasterConfig {
+            clk_div: 8,
+            message_size: 50,
+        };
+
+        let mut spi = PioSpiMaster::new(
+            &mut pio,
+            &clk_pin,
+            &mosi_pin,
+            &miso_pin,
+            config,
+        );
+
+        let data = 0x0000000001234567_89u64;
+        info!("Sending: 0x{:012x}", data);
+        let response = spi.transfer(data);
+        info!("Received: 0x{:012x}", response);
+        Timer::after_millis(100).await;
+    }
+
+    // Demo 3: 60-bit transfer
+    {
+        info!("=== 60-bit Transfer Demo ===");
+        let config = SpiMasterConfig {
+            clk_div: 8,
+            message_size: 60,
+        };
+
+        let mut spi = PioSpiMaster::new(
+            &mut pio,
+            &clk_pin,
+            &mosi_pin,
+            &miso_pin,
+            config,
+        );
+
+        let data = 0x0FEDCBA987654321_u64;
+        info!("Sending: 0x{:015x}", data);
+        let response = spi.transfer(data);
+        info!("Received: 0x{:015x}", response);
+        Timer::after_millis(100).await;
+    }
+
+    info!("Demo complete");
     loop {
-        info!("Running");
-        
-        // Example: Send 50-bit message with read flag set
-        // Message format:
-        // - Bits [49:0]: 50-bit data to transmit
-        // - Bit 50: read flag (1 = read 50-bit response, 0 = write only)
-        let msg = 0x0000000001234567_89 | (1 << 50);
-        
-        if let Some(response) = spi.transfer(msg) {
-            info!("Received: 0x{:012x}", response);
-        } else {
-            info!("No response (read flag not set)");
-        }
-
         Timer::after_millis(1000).await;
     }
 }
