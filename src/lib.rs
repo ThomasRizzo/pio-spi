@@ -41,6 +41,7 @@
 use embassy_rp::peripherals::PIO0;
 use embassy_rp::pio::{Config, LoadedProgram, Pio, Pin, StateMachine};
 use fixed::traits::ToFixed;
+use pio::pio_asm;
 
 pub struct SpiMasterConfig {
     pub clk_div: u16,
@@ -168,93 +169,36 @@ impl<'d> PioSpiMaster<'d> {
     }
 }
 
-/// Generates the PIO program for half-duplex SPI
+/// Generates the PIO program for transmit-only SPI Mode 3
 /// 
-/// Uses explicit bit-level shifting with CLK toggling during both write and read phases.
-/// OSR auto-fill handles refilling from TX FIFO as bits are shifted.
-/// 
-/// # Arguments
-/// * `message_size` - Number of bits to transfer (16-60 bits)
+/// SPI Mode 3 (CPOL=1, CPHA=1) implementation:
+/// - Clock idles HIGH
+/// - Data shifted OUT on falling edge of clock
 /// 
 /// Program flow:
-/// 1. Write phase: Single consolidated loop (executes twice via X register)
-///    - Loop 1: Shift loop1_size bits from OSR to MOSI with CLK toggling
-///    - X register decrements on second iteration, enables looping back
-///    - Loop 2: Shift loop2_size bits from OSR to MOSI with CLK toggling
-///    - Auto-fill refills OSR when exhausted
-/// 2. Read phase: Single consolidated loop (executes twice via X register)
-///    - Loop 1: Shift loop1_size bits from MISO to ISR with CLK toggling
-///    - X register decrements on second iteration, enables looping back
-///    - Loop 2: Shift loop2_size bits from MISO to ISR with CLK toggling
-/// 3. PUSH result to RX FIFO
-/// 
-/// Clock timing: CLK goes high, bit is sampled/driven, CLK goes low
-/// This is SPI Mode 0 timing (CPOL=0, CPHA=0)
-/// 
-/// Pin mapping:
-/// - SET pins[0]: CLK (output, toggled each bit)
-/// - OUT pins[0]: MOSI (output, shifted during write phase)
-/// - IN pins[0]: MISO (input, sampled during read phase)
-fn get_pio_program(message_size: usize) -> pio::Program<32> {
-    use pio::{Assembler, InSource, JmpCondition, OutDestination, SetDestination};
-    
-    // Validate input
-    assert!(message_size >= 16 && message_size <= 60, 
-            "message_size must be between 16 and 60 bits");
-    
-    let mut a = Assembler::<{ pio::RP2040_MAX_PROGRAM_SIZE }>::new();
-    
-    // Calculate loop sizes
-    let loop1_size = message_size / 2;
-    let loop2_size = message_size - loop1_size;
-    
-    let mut wrap_target = a.label();
-    let mut out_loop = a.label();
-    let mut in_loop = a.label();
-    
-    a.bind(&mut wrap_target);
-    
-    // Write phase: shift out message_size bits with CLK toggling
-    // Consolidated loop: executes loop1_size iterations, then loop2_size iterations
-    // Uses X register as single-shot flag to loop back once after first iteration
-    a.set(SetDestination::X, 1);            // Set X=1 to loop once after Y exhausts
-    a.set(SetDestination::Y, (loop1_size - 1) as u8);
-    a.bind(&mut out_loop);
-    a.out(OutDestination::PINS, 1);         // Shift 1 bit to MOSI
-    a.set(SetDestination::PINS, 1);         // CLK high
-    a.set(SetDestination::PINS, 0);         // CLK low
-    a.jmp(JmpCondition::YDecNonZero, &mut out_loop);
-    
-    // After first loop exits, prepare second loop
-    a.set(SetDestination::Y, (loop2_size - 1) as u8);
-    a.jmp(JmpCondition::XDecNonZero, &mut out_loop);  // Jump back if X != 0 (decrement X)
-    
-    // Read phase: shift in message_size bits with CLK toggling
-    // Consolidated loop: executes loop1_size iterations, then loop2_size iterations
-    // Uses X register as single-shot flag to loop back once after first iteration
-    a.set(SetDestination::X, 1);            // Set X=1 to loop once after Y exhausts
-    a.set(SetDestination::Y, (loop1_size - 1) as u8);
-    a.bind(&mut in_loop);
-    a.set(SetDestination::PINS, 1);         // CLK high
-    a.r#in(InSource::PINS, 1);              // Shift in from MISO
-    a.set(SetDestination::PINS, 0);         // CLK low
-    a.jmp(JmpCondition::YDecNonZero, &mut in_loop);
-    
-    // After first loop exits, prepare second loop
-    a.set(SetDestination::Y, (loop2_size - 1) as u8);
-    a.jmp(JmpCondition::XDecNonZero, &mut in_loop);   // Jump back if X != 0 (decrement X)
-    
-    // Push result to RX FIFO
-    // For message_size <= 32: ISR has all bits, push blocks until threshold reached
-    // For message_size > 32: ISR auto-pushed at 32-bit boundary, push remaining bits
-    let mut wrap_end = a.label();
-    
-    // Always do final push to ensure all bits are sent
-    // For sizes <= 32: blocks until threshold (message_size bits) is met
-    // For sizes > 32: auto-push already occurred at 32 bits, this pushes remaining bits
-    // push(blocking=true, if_full=false): block if RX FIFO full, push without waiting for threshold
-    a.push(true, false);
-    a.bind(&mut wrap_end);
-    
-    a.assemble_with_wrap(wrap_end, wrap_target)
+/// 1. SET PINS 1: Initialize CLK HIGH (CPOL=1 idle state)
+/// 2. PULL block: Load TX data into OSR (blocks if FIFO empty)
+/// 3. MOV OSR to Y: Copy bit count to Y
+/// 4. MOV Y to X: Copy to X for bit loop counter (wrap_target)
+/// 5. loop: OUT PINS 1: Shift 1 bit to MOSI
+/// 6. SET PINS 0: CLK falls (falling edge)
+/// 7. SET PINS 1: CLK rises (back to idle HIGH)
+/// 8. JMP X-- to loop: Repeat until all bits shifted
+/// 9. OUT NULL 32: Clear remaining OSR bits (triggers autopush)
+/// 10. WRAP to loop: Loop back to start of bit loop
+fn get_pio_program(_message_size: usize) -> pio::Program<32> {
+    pio_asm!(
+        "set pins, 1",          // Initialize CLK HIGH (CPOL=1 idle state)
+        "pull block",           // Load TX data into OSR
+        "mov y, osr",           // Y = bit count
+        ".wrap_target",         // Wrap target
+        "mov x, y",             // X = loop counter
+        "loop:",                // Loop label
+        "out pins, 1",          // Shift 1 bit to MOSI
+        "set pins, 0",          // CLK falls (falling edge)
+        "set pins, 1",          // CLK rises back to HIGH
+        "jmp x--, loop",        // Loop back if X != 0
+        "out null, 32",         // Clear remaining OSR bits (autopush)
+        ".wrap",                // End of wrap region
+    ).program
 }
