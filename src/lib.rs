@@ -211,17 +211,24 @@ impl<'d, PIO: Instance, const SM: usize> PioSpiMaster<'d, PIO, SM> {
 /// - Data sampled on rising clock edge
 fn get_pio_program(_message_size: usize) -> pio::Program<32> {
     pio_asm!(
-        "set pins, 1",          // Initialize CLK HIGH 
-        "pull block",           // Load message_size (bit count) from TX FIFO
-        "mov y, osr",           // Y = bit count for all transfers
-        ".wrap_target",         // Loop returns here after each transfer
-        "mov x, y",             // Copy bit count to X (loop counter)
-        "loop:",                // Per-bit loop
-        "out pins, 1",          // Shift 1 bit to MOSI (auto-fills OSR from TX FIFO)
-        "set pins, 0",          // CLK goes low
-        "set pins, 1",          // CLK goes high
-        "jmp x--, loop",        // Repeat until all bits shifted
-        "out null, 32",         // Clear remaining OSR bits (triggers auto-push)
-        ".wrap",                // Loop back to wrap_target
+        "set pins, 1",                  // Initialize CLK HIGH 
+        "pull block",                   // Load message_size (bit count) from TX FIFO
+        "mov y, osr",                   // Y = bit count for all transfers
+        ".wrap_target",                 // Loop returns here after each transfer
+        "mov x, y",                     // Copy bit count to X (write loop counter)
+        "loop_write:",                  // Write phase per-bit loop
+        "  out pins, 1",                // Shift 1 bit to MOSI (auto-fills OSR from TX FIFO)
+        "  set pins, 0",                // CLK goes low
+        "  set pins, 1",                // CLK goes high
+        "  jmp x--, loop_write",        // Repeat until all bits shifted
+        "out null, 32",                 // Clear remaining OSR bits (triggers auto-push)
+        "mov x, y",                     // Copy bit count to X (read loop counter)
+        "loop_read:",                   // Read phase per-bit loop
+        "  in pins, 1",                 // Shift 1 bit from MISO (auto-fills ISR)
+        "  set pins, 0",                // CLK goes low
+        "  set pins, 1",                // CLK goes high
+        "  jmp x--, loop_read",         // Repeat until all bits read
+        "push noblock",                 // Push any remaining read bits (if < 32)
+        ".wrap",                        // Loop back to wrap_target
     ).program
 }
