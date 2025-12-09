@@ -109,6 +109,9 @@ impl<'d> PioSpiMaster<'d> {
         pio.sm0.set_config(&cfg);
         pio.sm0.set_enable(true);
         
+        // Push message_size to TX FIFO for PIO program to use as bit counter
+        pio.sm0.tx().push(config.message_size as u32);
+        
         Self {
             sm0: &mut pio.sm0,
             _program,
