@@ -36,7 +36,7 @@ async fn main(_spawner: Spawner) {
             message_size: 16,
         };
 
-        let mut spi = PioSpiMaster::<0>::new(
+        let mut spi = PioSpiMaster::<PIO0, 0>::new(
             &mut common,
             sm0,
             &clk_pin,
@@ -60,7 +60,7 @@ async fn main(_spawner: Spawner) {
             message_size: 50,
         };
 
-        let mut spi = PioSpiMaster::<1>::new(
+        let mut spi = PioSpiMaster::<PIO0, 1>::new(
             &mut common,
             sm1,
             &clk_pin,
@@ -84,7 +84,7 @@ async fn main(_spawner: Spawner) {
             message_size: 60,
         };
 
-        let mut spi = PioSpiMaster::<2>::new(
+        let mut spi = PioSpiMaster::<PIO0, 2>::new(
             &mut common,
             sm2,
             &clk_pin,

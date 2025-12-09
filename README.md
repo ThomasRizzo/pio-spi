@@ -46,6 +46,7 @@ Pins are configurable when creating the `PioSpiMaster`.
 ## Usage Example
 
 ```rust
+use embassy_rp::peripherals::PIO0;
 use embassy_rp::pio::Pio;
 use pio_spi::{PioSpiMaster, SpiMasterConfig};
 
@@ -57,12 +58,12 @@ let clk = common.make_pio_pin(p.PIN_2);
 let mosi = common.make_pio_pin(p.PIN_3);
 let miso = common.make_pio_pin(p.PIN_4);
 
-// Configure SM0 for 16-bit transfers
+// Configure SM0 for 16-bit transfers on PIO0
 let config_16bit = SpiMasterConfig {
     clk_div: 8,
     message_size: 16,
 };
-let mut spi_16 = PioSpiMaster::<0>::new(
+let mut spi_16 = PioSpiMaster::<PIO0, 0>::new(
     &mut common,
     sm0,
     &clk,
@@ -71,12 +72,12 @@ let mut spi_16 = PioSpiMaster::<0>::new(
     config_16bit,
 );
 
-// Configure SM1 for 50-bit transfers
+// Configure SM1 for 50-bit transfers on PIO0
 let config_50bit = SpiMasterConfig {
     clk_div: 8,
     message_size: 50,
 };
-let mut spi_50 = PioSpiMaster::<1>::new(
+let mut spi_50 = PioSpiMaster::<PIO0, 1>::new(
     &mut common,
     sm1,
     &clk,
@@ -204,7 +205,6 @@ The program supports any message size by reading the bit count from TX FIFO at i
 
 - **Half-duplex only**: Cannot TX and RX simultaneously (writes then reads)
 - **Fixed per-SM size**: Message size set at state machine initialization, same for all transfers on that SM
-- **Single PIO**: Hardcoded to PIO0 (future work: support PIO0 and PIO1 via generics)
 - **Blocking**: `transfer()` waits for completion (no interrupt/async support)
 - **Manual FIFO management**: Caller must push correct number of TX FIFO words and read RX results
 
@@ -224,11 +224,11 @@ cargo build --release  # Release build
 ## Future Enhancements
 
 - Async/await support with interrupt-driven completion
-- Variable-length messages
-- Full-duplex simultaneous TX/RX
-- Multiple state machine support
+- Per-transfer variable message size (currently fixed at SM initialization)
+- Full-duplex simultaneous TX/RX (currently sequential)
 - Built-in chip select management
 - Clock polarity/phase configuration
+- Support for RP2040 (currently RP2350)
 
 ## References
 

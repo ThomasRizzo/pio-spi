@@ -43,8 +43,7 @@
 //! - SM2 can be configured for 60-bit transfers
 //! - Each operates independently with its configured size
 
-use embassy_rp::peripherals::PIO0;
-use embassy_rp::pio::{Common, Config, LoadedProgram, Pin, StateMachine};
+use embassy_rp::pio::{Common, Config, Instance, LoadedProgram, Pin, StateMachine};
 use fixed::traits::ToFixed;
 use pio::pio_asm;
 
@@ -53,28 +52,28 @@ pub struct SpiMasterConfig {
     pub message_size: usize,
 }
 
-pub struct PioSpiMaster<'d, const SM: usize> {
-    sm: StateMachine<'d, PIO0, SM>,
-    _program: LoadedProgram<'d, PIO0>,
+pub struct PioSpiMaster<'d, PIO: Instance, const SM: usize> {
+    sm: StateMachine<'d, PIO, SM>,
+    _program: LoadedProgram<'d, PIO>,
     message_size: usize,
 }
 
-impl<'d, const SM: usize> PioSpiMaster<'d, SM> {
+impl<'d, PIO: Instance, const SM: usize> PioSpiMaster<'d, PIO, SM> {
     /// Creates a new PIO SPI Master
     /// 
     /// # Arguments
-    /// * `common` - The PIO0 peripheral's common interface (for program loading and pin setup)
-    /// * `sm0` - State machine 0 (takes ownership)
+    /// * `common` - The PIO peripheral's common interface (for program loading and pin setup)
+    /// * `sm` - State machine (takes ownership)
     /// * `clk_pin` - Clock pin (set/output)
     /// * `mosi_pin` - MOSI pin (output)
     /// * `miso_pin` - MISO pin (input)
     /// * `config` - SPI configuration
     pub fn new(
-        common: &mut Common<'d, PIO0>,
-        sm: StateMachine<'d, PIO0, SM>,
-        clk_pin: &Pin<'d, PIO0>,
-        mosi_pin: &Pin<'d, PIO0>,
-        miso_pin: &Pin<'d, PIO0>,
+        common: &mut Common<'d, PIO>,
+        sm: StateMachine<'d, PIO, SM>,
+        clk_pin: &Pin<'d, PIO>,
+        mosi_pin: &Pin<'d, PIO>,
+        miso_pin: &Pin<'d, PIO>,
         config: SpiMasterConfig,
     ) -> Self {
         // Load PIO program
