@@ -21,12 +21,12 @@ async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
     // Initialize PIO with pins
-    let mut pio = Pio::new(p.PIO0, Irqs);
+    let Pio { mut common, sm0, sm1, sm2, .. } = Pio::new(p.PIO0, Irqs);
 
     // Create PIO pins from GPIO pins
-    let clk_pin = pio.common.make_pio_pin(p.PIN_2);
-    let mosi_pin = pio.common.make_pio_pin(p.PIN_3);
-    let miso_pin = pio.common.make_pio_pin(p.PIN_4);
+    let clk_pin = common.make_pio_pin(p.PIN_2);
+    let mosi_pin = common.make_pio_pin(p.PIN_3);
+    let miso_pin = common.make_pio_pin(p.PIN_4);
 
     // Demo 1: 16-bit transfer
     {
@@ -36,8 +36,9 @@ async fn main(_spawner: Spawner) {
             message_size: 16,
         };
 
-        let mut spi = PioSpiMaster::new(
-            &mut pio,
+        let mut spi = PioSpiMaster::<0>::new(
+            &mut common,
+            sm0,
             &clk_pin,
             &mosi_pin,
             &miso_pin,
@@ -59,8 +60,9 @@ async fn main(_spawner: Spawner) {
             message_size: 50,
         };
 
-        let mut spi = PioSpiMaster::new(
-            &mut pio,
+        let mut spi = PioSpiMaster::<1>::new(
+            &mut common,
+            sm1,
             &clk_pin,
             &mosi_pin,
             &miso_pin,
@@ -82,8 +84,9 @@ async fn main(_spawner: Spawner) {
             message_size: 60,
         };
 
-        let mut spi = PioSpiMaster::new(
-            &mut pio,
+        let mut spi = PioSpiMaster::<2>::new(
+            &mut common,
+            sm2,
             &clk_pin,
             &mosi_pin,
             &miso_pin,

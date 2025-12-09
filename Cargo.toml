@@ -10,7 +10,6 @@ name = "pio_spi"
 [[bin]]
 name = "pio-spi"
 path = "src/main.rs"
-# TODO: Fix lifetime issue in main - binaries don't compile currently
 
 [dependencies]
 embassy-embedded-hal = { version = "0.5.0", features = ["defmt"] }

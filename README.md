@@ -1,6 +1,6 @@
 # PIO SPI Master for RP2350
 
-Half-duplex SPI master implementation using the RP2350's Programmable Input/Output (PIO) module for 50-bit message transfers.
+Half-duplex SPI master implementation using the RP2350's Programmable Input/Output (PIO) module with configurable message sizes (16-60 bits).
 
 ## Goals
 
@@ -8,23 +8,28 @@ This repository demonstrates the development of a working (and hopefully useful)
 
 ## Features
 
-- **50-bit message support** with built-in read flag
-- **Half-duplex operation**: 50-bit write phase followed by optional 50-bit read phase
+- **Configurable message size** (16-60 bits per transfer)
+- **Multiple state machines**: SM0, SM1, SM2 can operate independently with different message sizes
+- **Half-duplex operation**: Write phase followed by read phase (same bit count)
 - **PIO-based**: Uses RP2350's dedicated PIO hardware, freeing up main CPU
 - **Configurable clock divider** for flexible SPI speeds
-- **Auto-fill FIFO mode** for seamless 50-bit handling across 32-bit boundaries
-- **32-instruction PIO program** (fits comfortably in 64-instruction memory)
+- **Auto-fill FIFO mode** for seamless multi-word transfers (e.g., 50 bits across two 32-bit FIFO words)
+- **Unified PIO program** (~12 instructions, fits easily in 64-instruction memory)
 
 ## Message Format
 
+For a transfer with `message_size` bits:
+
 ```
-Bit 63-51    Bit 50      Bits 49-0
-[Padding]    [Read Flag] [50-bit Data]
+Bits [message_size-1:0]    Data to transmit on MOSI
+Bits [63:message_size]     Unused/padding
 ```
 
-- **Bits [49:0]**: 50-bit data to transmit on MOSI
-- **Bit 50**: Read flag (1 = read 50 bits from MISO after write, 0 = write-only)
-- **Bits [63:51]**: Unused (padding)
+Example for 50-bit transfers:
+```
+Bits [49:0]    50-bit data to transmit on MOSI
+Bits [63:50]   Unused (padding)
+```
 
 ## Pin Configuration
 
@@ -45,98 +50,115 @@ use embassy_rp::pio::Pio;
 use pio_spi::{PioSpiMaster, SpiMasterConfig};
 
 // Initialize PIO
-let Pio { mut common, sm0, .. } = Pio::new(p.PIO0, Irqs);
+let Pio { mut common, sm0, sm1, .. } = Pio::new(p.PIO0, Irqs);
 
 // Create PIO pins
 let clk = common.make_pio_pin(p.PIN_2);
 let mosi = common.make_pio_pin(p.PIN_3);
 let miso = common.make_pio_pin(p.PIN_4);
 
-// Configure and create SPI master
-let config = SpiMasterConfig { clk_div: 8 };
-let mut spi = PioSpiMaster::new(&mut pio, sm0, &clk, &mosi, &miso, config);
+// Configure SM0 for 16-bit transfers
+let config_16bit = SpiMasterConfig {
+    clk_div: 8,
+    message_size: 16,
+};
+let mut spi_16 = PioSpiMaster::<0>::new(
+    &mut common,
+    sm0,
+    &clk,
+    &mosi,
+    &miso,
+    config_16bit,
+);
 
-// Transfer with read
-let msg = 0x0123456789 | (1 << 50);  // 50-bit data + read flag
-if let Some(response) = spi.transfer(msg) {
-    println!("Received: 0x{:012x}", response);
-}
+// Configure SM1 for 50-bit transfers
+let config_50bit = SpiMasterConfig {
+    clk_div: 8,
+    message_size: 50,
+};
+let mut spi_50 = PioSpiMaster::<1>::new(
+    &mut common,
+    sm1,
+    &clk,
+    &mosi,
+    &miso,
+    config_50bit,
+);
 
-// Write-only transfer
-let msg = 0x0123456789;  // No read flag
-spi.transfer(msg);  // Returns None
+// 16-bit transfer
+let response_16 = spi_16.transfer(0xABCD_u64);
+println!("Received: 0x{:04x}", response_16 & 0xFFFF);
+
+// 50-bit transfer
+let response_50 = spi_50.transfer(0x0123456789_u64);
+println!("Received: 0x{:012x}", response_50);
 ```
 
 ## Protocol
 
-1. **Write Phase** (always):
-   - Shift out 50 bits from TX FIFO to MOSI
-   - Toggle CLK for each bit
+1. **Initialization**:
+   - Host pushes `message_size` (bit count) to TX FIFO once
+   - PIO reads it and stores in Y register (used for all subsequent transfers)
 
-2. **Read Phase** (if bit 50 = 1):
-   - Toggle CLK while sampling MISO
-   - Shift in 50 bits to RX FIFO
+2. **Per-Transfer Write Phase**:
+   - Host pushes message_size bits to TX FIFO (split into 32-bit words as needed)
+   - PIO shifts out message_size bits to MOSI, toggling CLK for each bit
+   - TX FIFO auto-fill refills OSR as bits are shifted
 
-3. **Data Flow**:
-   - Host writes 2×32-bit words to TX FIFO (total 64 bits, 50 bits + padding)
-   - PIO shifts out 50 bits with auto-fill
-   - PIO shifts in 50 bits with auto-fill
+3. **Per-Transfer Read Phase**:
+   - PIO shifts in message_size bits from MISO, toggling CLK for each bit
+   - ISR accumulates bits, auto-pushes to RX FIFO at configured threshold
+
+4. **Data Flow Example** (50-bit transfer):
+   - Init: Host pushes 50 to TX FIFO (bit count)
+   - Transfer: Host pushes 2×32-bit words (50 bits + 14 padding bits)
+   - PIO reads bit count (50), shifts out 50 bits with auto-fill
+   - PIO shifts in 50 bits, ISR auto-pushes at 32-bit and 18-bit boundaries
    - Host reads 2×32-bit words from RX FIFO
 
 ## Implementation Details
 
 ### PIO Program Structure
 
-The program uses bit-level loops with CLK toggling during both write and read phases:
+The program uses a unified, configurable loop that handles any message size (16-60 bits):
 
 ```pio
+set pins, 1              # Initialize CLK HIGH
+pull block               # Load message_size from TX FIFO
+mov y, osr               # Y = bit count (loop counter)
+
 .wrap_target
-  # Write phase: 50 bits total (two 25-bit loops)
-  set y, 24           # Counter for first 25 bits
-  out_loop_1:
-    out pins, 1       # Shift 1 bit to MOSI
-    set pins, 1       # CLK high
-    set pins, 0       # CLK low
-    jmp y--, out_loop_1
-  
-  set y, 24           # Counter for next 25 bits
-  out_loop_2:
-    out pins, 1
-    set pins, 1
-    set pins, 0
-    jmp y--, out_loop_2
-  
-  # Read phase: 50 bits total (two 25-bit loops)
-  set y, 24
-  in_loop_1:
-    set pins, 1       # CLK high
-    in pins, 1        # Sample MISO
-    set pins, 0       # CLK low
-    jmp y--, in_loop_1
-  
-  set y, 24
-  in_loop_2:
-    set pins, 1
-    in pins, 1
-    set pins, 0
-    jmp y--, in_loop_2
-  
-  push block          # Push 50-bit result to RX FIFO
+  mov x, y               # Copy Y to X (loop counter for this transfer)
+  loop:
+    out pins, 1          # Shift 1 bit from OSR to MOSI
+    set pins, 0          # CLK low
+    set pins, 1          # CLK high
+    jmp x--, loop        # Repeat until X reaches 0
+  out null, 32           # Clear remaining OSR bits (triggers auto-push)
 .wrap
 ```
 
+**Key points:**
+- Y register holds message_size (set once at initialization)
+- X register is the per-transfer counter (copied from Y)
+- Loop executes X times, shifting 1 bit each iteration
+- Auto-fill refills OSR from TX FIFO as bits are shifted
+- Auto-push flushes ISR to RX FIFO at configured threshold
+- Works for any message size; no recompilation needed
+
 ### Register Usage
 
-- **Y register**: Loop counter (0-24 for 25 iterations per loop)
+- **Y register**: Message size (bit count), loaded once at initialization, reused for all transfers
+- **X register**: Per-transfer loop counter, copied from Y before each transfer
 - **OSR (Output Shift Register)**: Holds TX data, auto-fills from TX FIFO as bits are shifted
-- **ISR (Input Shift Register)**: Holds RX data, auto-pushed to RX FIFO when full
+- **ISR (Input Shift Register)**: Holds RX data, auto-pushed to RX FIFO at threshold
 
 ### FIFO Configuration
 
-- **TX FIFO**: Auto-fill enabled; refills OSR when exhausted during OUT shifts
-- **RX FIFO**: Auto-fill enabled; pushes ISR when 32 bits accumulated
-- **Mode**: Duplex (separate TX/RX)
-- **Timing**: SPI Mode 0 (CPOL=0, CPHA=0) - clock toggles for each bit
+- **TX FIFO**: Auto-fill enabled; refills OSR when exhausted (at 32-bit boundaries)
+- **RX FIFO**: Auto-push at configurable threshold (set to min(message_size, 32) bits)
+- **Mode**: Duplex (separate TX/RX, but sequential write-then-read per transfer)
+- **Timing**: SPI Mode 0 (CPOL=0, CPHA=0) - data sampled after CLK rising edge
 
 ## Clock Divider
 
@@ -147,27 +169,30 @@ The `clk_div` parameter controls SPI clock frequency:
 
 Actual SPI frequency depends on bit timing and RP2350 system clock.
 
-## Architecture Notes
+## Design Notes
 
-### Why 50 Bits?
+### Configurable Message Size (16-60 bits)
 
-1. Fits in OSR/ISR 32-bit shift registers when split across two cycles
-2. Allows 1-bit read flag (bit 50) in 64-bit message word
-3. Balances simplicity with useful data size
+The program supports any message size by reading the bit count from TX FIFO at initialization:
+- Single `pull block` reads message_size once
+- Y register stores it for the lifetime of the state machine
+- Each transfer uses Y as the loop counter
+- No recompilation needed; different state machines can run different sizes
 
-### Why Two Loops?
+### Why Auto-Fill and Auto-Push?
 
-PIO SET instruction supports immediate values 0-31. Using two 25-bit loops allows:
-- Counter set to 24 = 25 iterations (0-24 inclusive)
-- Two loops = 50 total bits
-- Avoids complex counter math
+- **TX Auto-fill**: Refills OSR from TX FIFO as bits are shifted, enabling seamless multi-word transfers
+  - Example: 50-bit transfer uses 2×32-bit FIFO words; OSR auto-refills at 32-bit boundary
+- **RX Auto-push**: Flushes ISR to RX FIFO at configured threshold, preventing deadlock
+  - Threshold set to `min(message_size, 32)` to match hardware limits
+  - Example: 50-bit message pushes at 32 bits and 18 bits
 
-### Why Auto-Fill?
+### Why Single Unified Loop?
 
-Auto-fill at 50-bit boundaries means:
-- No explicit FIFO management in PIO code
-- Seamless handling of 50-bit transfers split across 32-bit boundaries
-- Reduced instruction count and latency
+- Original design had separate write/read loops for 50-bit mode
+- Unified loop handles any size (16-60) with identical logic
+- Fewer instructions (~12 vs 32), more flexibility, same performance
+- Trade-off: Requires pushing message_size to TX FIFO at init time
 
 ## Dependencies
 
@@ -177,11 +202,11 @@ Auto-fill at 50-bit boundaries means:
 
 ## Limitations
 
-- **Half-duplex only**: Cannot TX and RX simultaneously
-- **Fixed size**: Always 50-bit transfers
-- **Single state machine**: Uses SM0 only
-- **Blocking**: `transfer()` waits for completion
-- **No async support**: Synchronous API
+- **Half-duplex only**: Cannot TX and RX simultaneously (writes then reads)
+- **Fixed per-SM size**: Message size set at state machine initialization, same for all transfers on that SM
+- **Single PIO**: Hardcoded to PIO0 (future work: support PIO0 and PIO1 via generics)
+- **Blocking**: `transfer()` waits for completion (no interrupt/async support)
+- **Manual FIFO management**: Caller must push correct number of TX FIFO words and read RX results
 
 ## Performance
 
