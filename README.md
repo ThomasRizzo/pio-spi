@@ -2,6 +2,10 @@
 
 Half-duplex SPI master implementation using the RP2350's Programmable Input/Output (PIO) module for 50-bit message transfers.
 
+## Goals
+
+This repository demonstrates the development of a working (and hopefully useful) embedded systems library using only AI agents. The objective is to create a functional SPI driver that leverages the RP2350's PIO hardware while maintaining clean, maintainable code through AI-driven development practices.
+
 ## Features
 
 - **50-bit message support** with built-in read flag
