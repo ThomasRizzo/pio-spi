@@ -125,37 +125,37 @@ spi_16.write(0x1234_u64);
 The program uses a unified, configurable loop that handles any message size (16-60 bits):
 
 ```pio
-set pins, 1              # Initialize CLK HIGH
+set pins, 1              # Initialize CLK HIGH (Mode 3 idle state)
 pull block               # Load message_size from TX FIFO
 mov y, osr               # Y = bit count (loop counter)
 
 .wrap_target
   mov x, y               # Copy Y to X (write loop counter)
   loop_write:
+    set pins, 0          # CLK falls (safe to change data)
     out pins, 1          # Shift 1 bit from OSR to MOSI (write phase)
-    set pins, 0          # CLK low
-    set pins, 1          # CLK high
+    set pins, 1          # CLK rises (slave samples stable data)
     jmp x--, loop_write  # Repeat until X reaches 0
-  out null, 32           # Clear remaining OSR bits (triggers auto-push)
   
   mov x, y               # Copy Y to X (read loop counter)
   loop_read:
-    in pins, 1           # Shift 1 bit from MISO (read phase)
-    set pins, 0          # CLK low
-    set pins, 1          # CLK high
+    set pins, 0          # CLK falls
+    in pins, 1           # Shift 1 bit from MISO (read phase, slave outputs during LOW)
+    set pins, 1          # CLK rises (master samples on rising edge)
     jmp x--, loop_read   # Repeat until X reaches 0
   push noblock           # Push any remaining read bits
+  out null, 32           # Clear remaining OSR bits before next transfer
 .wrap
 ```
 
 **Key points:**
 - Y register holds message_size (set once at initialization)
 - X register is the per-transfer counter (copied from Y for each loop)
-- Write loop executes X times, shifting 1 bit to MOSI each iteration
-- Read loop executes X times, shifting 1 bit from MISO each iteration
+- Write loop: CLK falls → data setup → CLK rises (slave samples)
+- Read loop: CLK falls → slave outputs data → CLK rises (master samples)
 - Auto-fill refills OSR from TX FIFO as bits are shifted during write phase
 - Auto-push flushes ISR to RX FIFO at configured threshold during read phase
-- Both phases use identical CLK toggle pattern for timing consistency
+- OSR cleared after read phase prevents stalling on next wrap-around
 - Works for any message size; no recompilation needed
 
 ### Register Usage
@@ -170,7 +170,7 @@ mov y, osr               # Y = bit count (loop counter)
 - **TX FIFO**: Auto-fill enabled; refills OSR when exhausted (at 32-bit boundaries)
 - **RX FIFO**: Auto-push at configurable threshold (set to min(message_size, 32) bits)
 - **Mode**: Duplex (separate TX/RX, but sequential write-then-read per transfer)
-- **Timing**: SPI Mode 0 (CPOL=0, CPHA=0) - data sampled after CLK rising edge
+- **Timing**: SPI Mode 3 (CPOL=1, CPHA=1) - CLK idles HIGH, data setup during LOW, sampled on rising edge
 
 ## Clock Divider
 
