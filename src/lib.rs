@@ -249,23 +249,23 @@ impl<'d, PIO: Instance, const SM: usize> PioSpiMaster<'d, PIO, SM> {
 /// - Reduces instruction count from ~21 to ~11 (48% reduction), improving timing resolution
 fn get_pio_program(_message_size: usize) -> pio::Program<32> {
     pio_asm!(
-        ".side_set 1 opt", // Enable 1-bit side-set for CLK (optional on all instructions)
-        "pull block",      // Load message_size (bit count) from TX FIFO
+        ".side_set 1 opt",   // Enable 1-bit side-set for CLK (optional on all instructions)
+        "pull block",        // Load message_size (bit count) from TX FIFO
         "mov y, osr side 1", // Y = bit count for all transfers; CLK HIGH (Mode 3 idle state)
-        ".wrap_target",    // Loop returns here after each transfer
-        "mov x, y side 1", // Copy bit count to X (write loop counter); CLK HIGH
-        "loop_write:",     // Write phase per-bit loop
+        ".wrap_target",      // Loop returns here after each transfer
+        "mov x, y side 1",   // Copy bit count to X (write loop counter); CLK HIGH
+        "loop_write:",       // Write phase per-bit loop
         "  out pins, 1 side 0", // Shift 1 bit to MOSI, CLK falls (setup phase)
-        "  nop side 1",    // CLK rises (slave samples stable data)
+        "  nop side 1",      // CLK rises (slave samples stable data)
         "  jmp x--, loop_write", // Repeat until all bits shifted
-        "mov x, y side 1", // Copy bit count to X (read loop counter); CLK HIGH
-        "loop_read:",      // Read phase per-bit loop
-        "  nop side 0",    // CLK falls (slave outputs data during LOW)
+        "mov x, y side 1",   // Copy bit count to X (read loop counter); CLK HIGH
+        "loop_read:",        // Read phase per-bit loop
+        "  nop side 0",      // CLK falls (slave outputs data during LOW)
         "  in pins, 1 side 1", // Sample MISO as CLK rises (Mode 3 timing)
         "  jmp x--, loop_read", // Repeat until all bits read
-        "push noblock",    // Push any remaining read bits (if < 32)
-        "out null, 32",    // Clear remaining OSR bits before next transfer
-        ".wrap",           // Loop back to wrap_target
+        "push noblock",      // Push any remaining read bits (if < 32)
+        "out null, 32",      // Clear remaining OSR bits before next transfer
+        ".wrap",             // Loop back to wrap_target
     )
     .program
 }
