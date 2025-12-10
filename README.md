@@ -10,12 +10,12 @@ This repository demonstrates the development of a working embedded systems libra
 
 - **Configurable message size** (16-60 bits per transfer)
 - **Multiple state machines**: SM0, SM1, SM2 can operate independently with different message sizes
-- **Full-duplex operation**: Write phase followed by read phase (same bit count)
+- **Sequential duplex operation**: Write phase followed by read phase (same bit count)
 - **PIO-based**: Uses RP2350's dedicated PIO hardware, freeing up main CPU
 - **Configurable clock divider** for flexible SPI speeds
 - **Auto-fill FIFO mode** for seamless multi-word transfers (e.g., 50 bits across two 32-bit FIFO words)
 - **Unified PIO program** (~20 instructions, fits easily in 32-instruction memory)
-- **Dual API**: `transfer()` for full-duplex, `write()` for write-only
+- **Dual API**: `transfer()` for write+read, `write()` for write-only
 
 ## Message Format
 
@@ -87,11 +87,11 @@ let mut spi_50 = PioSpiMaster::<PIO0, 1>::new(
     config_50bit,
 );
 
-// 16-bit full-duplex transfer (write then read)
+// 16-bit transfer (write then read)
 let response_16 = spi_16.transfer(0xABCD_u64);
 println!("Received: 0x{:04x}", response_16 & 0xFFFF);
 
-// 50-bit full-duplex transfer
+// 50-bit transfer (write then read)
 let response_50 = spi_50.transfer(0x0123456789_u64);
 println!("Received: 0x{:012x}", response_50);
 
@@ -105,20 +105,17 @@ spi_16.write(0x1234_u64);
    - Host pushes `message_size` (bit count) to TX FIFO once
    - PIO reads it and stores in Y register (used for all subsequent transfers)
 
-2. **Per-Transfer Write Phase**:
-   - Host pushes message_size bits to TX FIFO (split into 32-bit words as needed)
-   - PIO shifts out message_size bits to MOSI, toggling CLK for each bit
-   - TX FIFO auto-fill refills OSR as bits are shifted
+2. **Per-Transfer Sequence**:
+   - **Write Phase**: Host pushes message_size bits to TX FIFO (split into 32-bit words as needed), PIO shifts out bits to MOSI while toggling CLK
+   - **Read Phase**: PIO shifts in message_size bits from MISO while toggling CLK, results pushed to RX FIFO
+   - TX FIFO auto-fill refills OSR during write phase
+   - ISR accumulates bits and auto-pushes to RX FIFO at configured threshold during read phase
 
-3. **Per-Transfer Read Phase**:
-   - PIO shifts in message_size bits from MISO, toggling CLK for each bit
-   - ISR accumulates bits, auto-pushes to RX FIFO at configured threshold
-
-4. **Data Flow Example** (50-bit transfer):
+3. **Data Flow Example** (50-bit transfer):
    - Init: Host pushes 50 to TX FIFO (bit count)
    - Transfer: Host pushes 2×32-bit words (50 bits + 14 padding bits)
-   - PIO reads bit count (50), shifts out 50 bits with auto-fill
-   - PIO shifts in 50 bits, ISR auto-pushes at 32-bit and 18-bit boundaries
+   - PIO write phase: Reads bit count (50), shifts out 50 bits to MOSI with auto-fill from TX FIFO
+   - PIO read phase: Shifts in 50 bits from MISO, ISR auto-pushes at 32-bit and 18-bit boundaries
    - Host reads 2×32-bit words from RX FIFO
 
 ## Implementation Details
