@@ -139,9 +139,8 @@ mov y, osr               # Y = bit count (loop counter)
   
   mov x, y               # Copy Y to X (read loop counter)
   loop_read:
-    set pins, 0          # CLK falls
-    in pins, 1           # Shift 1 bit from MISO (read phase, slave outputs during LOW)
-    set pins, 1          # CLK rises (master samples on rising edge)
+    nop side 0           # CLK falls (slave outputs data during LOW)
+    in pins, 1 side 1    # Sample MISO as CLK rises (Mode 3 timing)
     jmp x--, loop_read   # Repeat until X reaches 0
   push noblock           # Push any remaining read bits
   out null, 32           # Clear remaining OSR bits before next transfer
@@ -151,12 +150,13 @@ mov y, osr               # Y = bit count (loop counter)
 **Key points:**
 - Y register holds message_size (set once at initialization)
 - X register is the per-transfer counter (copied from Y for each loop)
-- Write loop: CLK falls → data setup → CLK rises (slave samples)
-- Read loop: CLK falls → slave outputs data → CLK rises (master samples)
+- **Write loop**: CLK LOW (data setup) → CLK HIGH (slave samples on rising edge)
+- **Read loop**: CLK LOW (slave outputs) → CLK HIGH (master samples on rising edge)
+- **Side-set optimization**: CLK toggling via 1-bit side-set (eliminates 4 SET instructions)
 - Auto-fill refills OSR from TX FIFO as bits are shifted during write phase
 - Auto-push flushes ISR to RX FIFO at configured threshold during read phase
 - OSR cleared after read phase prevents stalling on next wrap-around
-- Works for any message size; no recompilation needed
+- Works for any message size (16-60 bits); no recompilation needed
 
 ### Register Usage
 
@@ -169,8 +169,11 @@ mov y, osr               # Y = bit count (loop counter)
 
 - **TX FIFO**: Auto-fill enabled; refills OSR when exhausted (at 32-bit boundaries)
 - **RX FIFO**: Auto-push at configurable threshold (set to min(message_size, 32) bits)
-- **Mode**: Duplex (separate TX/RX, but sequential write-then-read per transfer)
-- **Timing**: SPI Mode 3 (CPOL=1, CPHA=1) - CLK idles HIGH, data setup during LOW, sampled on rising edge
+- **Mode**: Half-duplex (separate TX/RX, sequential write-then-read per transfer)
+- **Timing**: SPI Mode 3 (CPOL=1, CPHA=1)
+  - CLK idles HIGH
+  - Write phase: Data setup during CLK=LOW, sampled by slave on rising edge
+  - Read phase: Data output by slave during CLK=LOW, sampled by master on rising edge
 
 ## Clock Divider
 
