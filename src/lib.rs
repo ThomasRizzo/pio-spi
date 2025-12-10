@@ -140,7 +140,7 @@ impl<'d, PIO: Instance, const SM: usize> PioSpiMaster<'d, PIO, SM> {
     ///
     /// # Notes
     /// - Always performs both write and read phases
-    /// - Implements SPI Mode 0 timing (CPOL=0, CPHA=0)
+    /// - Implements SPI Mode 3 timing (CPOL=1, CPHA=1)
     /// - Clock toggled for every bit shifted
     /// - Auto-fill handles FIFO refilling during operation
     pub fn transfer(&mut self, data: u64) -> u64 {
@@ -238,27 +238,27 @@ impl<'d, PIO: Instance, const SM: usize> PioSpiMaster<'d, PIO, SM> {
 /// - TX FIFO auto-fill handles multi-word transfers (e.g., 50 bits across two 32-bit words)
 /// - RX auto-push at configured threshold prevents FIFO deadlock
 ///
-/// **SPI Mode 0 Timing (CPOL=0, CPHA=0):**
-/// - Clock idles LOW (initially 1, so we're actually Mode 3, but toggle pattern works for Mode 0 with sample timing adjustment)
-/// - Data sampled on rising clock edge
+/// **SPI Mode 3 Timing (CPOL=1, CPHA=1):**
+/// - Clock idles HIGH
+/// - Data output setup during CLK=LOW, sampled on rising clock edge
 fn get_pio_program(_message_size: usize) -> pio::Program<32> {
     pio_asm!(
-        "set pins, 1",           // Initialize CLK HIGH
+        "set pins, 1",           // Initialize CLK HIGH (Mode 3 idle state)
         "pull block",            // Load message_size (bit count) from TX FIFO
         "mov y, osr",            // Y = bit count for all transfers
         ".wrap_target",          // Loop returns here after each transfer
         "mov x, y",              // Copy bit count to X (write loop counter)
         "loop_write:",           // Write phase per-bit loop
+        "  set pins, 0",         // CLK falls (safe to change data)
         "  out pins, 1",         // Shift 1 bit to MOSI (auto-fills OSR from TX FIFO)
-        "  set pins, 0",         // CLK goes low
-        "  set pins, 1",         // CLK goes high
+        "  set pins, 1",         // CLK rises (slave samples stable data)
         "  jmp x--, loop_write", // Repeat until all bits shifted
         "out null, 32",          // Clear remaining OSR bits (triggers auto-push)
         "mov x, y",              // Copy bit count to X (read loop counter)
         "loop_read:",            // Read phase per-bit loop
-        "  in pins, 1",          // Shift 1 bit from MISO (auto-fills ISR)
-        "  set pins, 0",         // CLK goes low
-        "  set pins, 1",         // CLK goes high
+        "  set pins, 0",         // CLK falls
+        "  in pins, 1",          // Shift 1 bit from MISO (slave outputs data during LOW)
+        "  set pins, 1",         // CLK rises (master samples on rising edge)
         "  jmp x--, loop_read",  // Repeat until all bits read
         "push noblock",          // Push any remaining read bits (if < 32)
         ".wrap",                 // Loop back to wrap_target
