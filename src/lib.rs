@@ -260,8 +260,8 @@ fn get_pio_program(_message_size: usize) -> pio::Program<32> {
         "  jmp x--, loop_write", // Repeat until all bits shifted
         "mov x, y",        // Copy bit count to X (read loop counter)
         "loop_read:",      // Read phase per-bit loop
-        "  in pins, 1 side 0", // Shift 1 bit from MISO, CLK falls
-        "  nop side 1",    // CLK rises (master samples on rising edge)
+        "  nop side 0",    // CLK falls (slave outputs data during LOW)
+        "  in pins, 1 side 1", // Sample MISO as CLK rises (Mode 3 timing)
         "  jmp x--, loop_read", // Repeat until all bits read
         "push noblock",    // Push any remaining read bits (if < 32)
         "out null, 32",    // Clear remaining OSR bits before next transfer
