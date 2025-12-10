@@ -253,7 +253,6 @@ fn get_pio_program(_message_size: usize) -> pio::Program<32> {
         "  out pins, 1",         // Shift 1 bit to MOSI (auto-fills OSR from TX FIFO)
         "  set pins, 1",         // CLK rises (slave samples stable data)
         "  jmp x--, loop_write", // Repeat until all bits shifted
-        "out null, 32",          // Clear remaining OSR bits (triggers auto-pull)
         "mov x, y",              // Copy bit count to X (read loop counter)
         "loop_read:",            // Read phase per-bit loop
         "  set pins, 0",         // CLK falls
@@ -261,6 +260,7 @@ fn get_pio_program(_message_size: usize) -> pio::Program<32> {
         "  set pins, 1",         // CLK rises (master samples on rising edge)
         "  jmp x--, loop_read",  // Repeat until all bits read
         "push noblock",          // Push any remaining read bits (if < 32)
+        "out null, 32",          // Clear remaining OSR bits before next transfer (triggers auto-pull when data available)
         ".wrap",                 // Loop back to wrap_target
     )
     .program
