@@ -127,12 +127,19 @@ For example: `bd create --help` shows `--parent`, `--deps`, `--assignee`, etc.
 
 ### Build Workflow
 
-**CRITICAL**: Always run full project build BEFORE committing:
+**CRITICAL**: Before committing code changes:
+
+1. **Format code**:
+```bash
+cargo fmt
+```
+
+2. **Build project**:
 ```bash
 cargo build
 ```
 
-Confirm `Finished` with exit code 0. Never commit code that doesn't build.
+Confirm `Finished` with exit code 0. Never commit code that doesn't build or is improperly formatted.
 
 ### Important Rules
 
