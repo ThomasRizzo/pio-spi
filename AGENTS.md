@@ -125,6 +125,15 @@ history/
 Run `bd <command> --help` to see all available flags for any command.
 For example: `bd create --help` shows `--parent`, `--deps`, `--assignee`, etc.
 
+### Build Workflow
+
+**CRITICAL**: Always run full project build BEFORE committing:
+```bash
+cargo build
+```
+
+Confirm `Finished` with exit code 0. Never commit code that doesn't build.
+
 ### Important Rules
 
 - ✅ Use bd for ALL task tracking
@@ -133,9 +142,11 @@ For example: `bd create --help` shows `--parent`, `--deps`, `--assignee`, etc.
 - ✅ Check `bd ready` before asking "what should I work on?"
 - ✅ Store AI planning docs in `history/` directory
 - ✅ Run `bd <cmd> --help` to discover available flags
+- ✅ **ALWAYS confirm full build before committing** (cargo build)
 - ❌ Do NOT create markdown TODO lists
 - ❌ Do NOT use external issue trackers
 - ❌ Do NOT duplicate tracking systems
 - ❌ Do NOT clutter repo root with planning documents
+- ❌ Do NOT commit code that doesn't build
 
 For more details, see README.md and QUICKSTART.md.

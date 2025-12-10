@@ -9,16 +9,13 @@
 //!
 //! Each SPI transfer uses a 64-bit message word:
 //! - **Bits [message_size-1:0]**: Configurable-bit data payload to transmit to MOSI
-//! - **Bit 50**: Read flag
-//!   - `1`: Perform full duplex - shift out bits then shift in same number of bits
-//!   - `0`: Write-only - shift out bits, discard input
-//! - **Bits [63:51]**: Unused/padding
+//! - **Bits [63:message_size]**: Unused/padding
 //!
 //! # Protocol
 //!
 //! The transfer protocol is:
 //! 1. **Write Phase**: Shift out message_size bits to MOSI line while toggling CLK
-//! 2. **Read Phase** (if read flag set): Shift in message_size bits from MISO line while toggling CLK
+//! 2. **Read Phase**: Shift in message_size bits from MISO line while toggling CLK
 //! 3. **FIFO Operation**: PIO internally handles FIFO refills via auto-fill at message_size-bit boundaries
 //!
 //! # Pins
@@ -125,7 +122,7 @@ impl<'d, PIO: Instance, const SM: usize> PioSpiMaster<'d, PIO, SM> {
         }
     }
 
-    /// Performs a half-duplex SPI transfer
+    /// Performs a full-duplex SPI transfer (write then read)
     ///
     /// # Arguments
     /// * `data` - Data to shift out on MOSI (only bits [message_size-1:0] are used)
@@ -136,7 +133,6 @@ impl<'d, PIO: Instance, const SM: usize> PioSpiMaster<'d, PIO, SM> {
     /// # Behavior
     /// 1. Splits the data into 32-bit words for TX FIFO
     /// 2. PIO write phase: Shifts out message_size bits to MOSI while toggling CLK
-    ///    - CLK pattern for each bit: low → high (setup) → low (sample)
     ///    - Auto-fill refills OSR from TX FIFO as bits are shifted
     /// 3. PIO read phase: Shifts in message_size bits from MISO while toggling CLK
     /// 4. PIO pushes result to RX FIFO
@@ -175,6 +171,42 @@ impl<'d, PIO: Instance, const SM: usize> PioSpiMaster<'d, PIO, SM> {
         
         // Mask result to message_size bits
         result & mask
+    }
+
+    /// Performs a write-only SPI transfer
+    ///
+    /// # Arguments
+    /// * `data` - Data to shift out on MOSI (only bits [message_size-1:0] are used)
+    ///
+    /// # Behavior
+    /// Pushes data words to TX FIFO without waiting for RX response. The PIO will still
+    /// perform both write and read phases internally, but this method returns immediately
+    /// without consuming the RX FIFO.
+    ///
+    /// Useful for:
+    /// - Command sequences where response isn't needed
+    /// - Streaming data bursts
+    /// - Avoiding RX FIFO deadlock when multiple writes precede a read
+    ///
+    /// # Notes
+    /// - Does not read RX FIFO (caller responsible for draining if needed)
+    /// - PIO still executes read phase internally
+    pub fn write(&mut self, data: u64) {
+        // Extract only the bits we need
+        let mask = (1u64 << self.message_size) - 1;
+        let data = data & mask;
+        
+        // Calculate how many 32-bit words we need
+        let words_needed = (self.message_size + 31) / 32; // Round up division
+        
+        // Write TX FIFO words
+        let tx_low = (data & 0xFFFFFFFF) as u32;
+        self.sm.tx().push(tx_low);
+        
+        if words_needed > 1 {
+            let tx_high = ((data >> 32) & 0xFFFFFFFF) as u32;
+            self.sm.tx().push(tx_high);
+        }
     }
 }
 
