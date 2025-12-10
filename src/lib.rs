@@ -243,22 +243,22 @@ impl<'d, PIO: Instance, const SM: usize> PioSpiMaster<'d, PIO, SM> {
 /// - Data output setup during CLK=LOW, sampled on rising clock edge
 ///
 /// **Side-Set Optimization:**
-/// - CLK toggled via 1-bit side-set (eliminates 4 separate `set pins` instructions)
+/// - CLK toggled via 1-bit side-set (eliminates 5 separate `set pins` instructions)
 /// - Side-set value 0 = CLK LOW, side-set value 1 = CLK HIGH
-/// - Reduces instruction count from ~20 to ~12, improving timing resolution
+/// - Applied to: data operations (out/in), loop setup (mov x, y), and initialization (mov y, osr)
+/// - Reduces instruction count from ~21 to ~11 (48% reduction), improving timing resolution
 fn get_pio_program(_message_size: usize) -> pio::Program<32> {
     pio_asm!(
         ".side_set 1 opt", // Enable 1-bit side-set for CLK (optional on all instructions)
-        "set pins, 1",     // Initialize CLK HIGH (Mode 3 idle state)
         "pull block",      // Load message_size (bit count) from TX FIFO
-        "mov y, osr",      // Y = bit count for all transfers
+        "mov y, osr side 1", // Y = bit count for all transfers; CLK HIGH (Mode 3 idle state)
         ".wrap_target",    // Loop returns here after each transfer
-        "mov x, y",        // Copy bit count to X (write loop counter)
+        "mov x, y side 1", // Copy bit count to X (write loop counter); CLK HIGH
         "loop_write:",     // Write phase per-bit loop
         "  out pins, 1 side 0", // Shift 1 bit to MOSI, CLK falls (setup phase)
         "  nop side 1",    // CLK rises (slave samples stable data)
         "  jmp x--, loop_write", // Repeat until all bits shifted
-        "mov x, y",        // Copy bit count to X (read loop counter)
+        "mov x, y side 1", // Copy bit count to X (read loop counter); CLK HIGH
         "loop_read:",      // Read phase per-bit loop
         "  nop side 0",    // CLK falls (slave outputs data during LOW)
         "  in pins, 1 side 1", // Sample MISO as CLK rises (Mode 3 timing)
