@@ -10,11 +10,12 @@ This repository demonstrates the development of a working (and hopefully useful)
 
 - **Configurable message size** (16-60 bits per transfer)
 - **Multiple state machines**: SM0, SM1, SM2 can operate independently with different message sizes
-- **Half-duplex operation**: Write phase followed by read phase (same bit count)
+- **Full-duplex operation**: Write phase followed by read phase (same bit count)
 - **PIO-based**: Uses RP2350's dedicated PIO hardware, freeing up main CPU
 - **Configurable clock divider** for flexible SPI speeds
 - **Auto-fill FIFO mode** for seamless multi-word transfers (e.g., 50 bits across two 32-bit FIFO words)
-- **Unified PIO program** (~12 instructions, fits easily in 64-instruction memory)
+- **Unified PIO program** (~20 instructions, fits easily in 32-instruction memory)
+- **Dual API**: `transfer()` for full-duplex, `write()` for write-only
 
 ## Message Format
 
@@ -86,13 +87,16 @@ let mut spi_50 = PioSpiMaster::<PIO0, 1>::new(
     config_50bit,
 );
 
-// 16-bit transfer
+// 16-bit full-duplex transfer (write then read)
 let response_16 = spi_16.transfer(0xABCD_u64);
 println!("Received: 0x{:04x}", response_16 & 0xFFFF);
 
-// 50-bit transfer
+// 50-bit full-duplex transfer
 let response_50 = spi_50.transfer(0x0123456789_u64);
 println!("Received: 0x{:012x}", response_50);
+
+// Write-only transfer (no waiting for response)
+spi_16.write(0x1234_u64);
 ```
 
 ## Protocol
@@ -129,22 +133,32 @@ pull block               # Load message_size from TX FIFO
 mov y, osr               # Y = bit count (loop counter)
 
 .wrap_target
-  mov x, y               # Copy Y to X (loop counter for this transfer)
-  loop:
-    out pins, 1          # Shift 1 bit from OSR to MOSI
+  mov x, y               # Copy Y to X (write loop counter)
+  loop_write:
+    out pins, 1          # Shift 1 bit from OSR to MOSI (write phase)
     set pins, 0          # CLK low
     set pins, 1          # CLK high
-    jmp x--, loop        # Repeat until X reaches 0
+    jmp x--, loop_write  # Repeat until X reaches 0
   out null, 32           # Clear remaining OSR bits (triggers auto-push)
+  
+  mov x, y               # Copy Y to X (read loop counter)
+  loop_read:
+    in pins, 1           # Shift 1 bit from MISO (read phase)
+    set pins, 0          # CLK low
+    set pins, 1          # CLK high
+    jmp x--, loop_read   # Repeat until X reaches 0
+  push noblock           # Push any remaining read bits
 .wrap
 ```
 
 **Key points:**
 - Y register holds message_size (set once at initialization)
-- X register is the per-transfer counter (copied from Y)
-- Loop executes X times, shifting 1 bit each iteration
-- Auto-fill refills OSR from TX FIFO as bits are shifted
-- Auto-push flushes ISR to RX FIFO at configured threshold
+- X register is the per-transfer counter (copied from Y for each loop)
+- Write loop executes X times, shifting 1 bit to MOSI each iteration
+- Read loop executes X times, shifting 1 bit from MISO each iteration
+- Auto-fill refills OSR from TX FIFO as bits are shifted during write phase
+- Auto-push flushes ISR to RX FIFO at configured threshold during read phase
+- Both phases use identical CLK toggle pattern for timing consistency
 - Works for any message size; no recompilation needed
 
 ### Register Usage
@@ -203,7 +217,7 @@ The program supports any message size by reading the bit count from TX FIFO at i
 
 ## Limitations
 
-- **Half-duplex only**: Cannot TX and RX simultaneously (writes then reads)
+- **Sequential duplex**: Writes then reads (cannot TX and RX simultaneously on same bits)
 - **Fixed per-SM size**: Message size set at state machine initialization, same for all transfers on that SM
 - **Blocking**: `transfer()` waits for completion (no interrupt/async support)
 - **Manual FIFO management**: Caller must push correct number of TX FIFO words and read RX results
@@ -225,10 +239,11 @@ cargo build --release  # Release build
 
 - Async/await support with interrupt-driven completion
 - Per-transfer variable message size (currently fixed at SM initialization)
-- Full-duplex simultaneous TX/RX (currently sequential)
+- Simultaneous TX/RX on separate pins (currently sequential on same pins)
 - Built-in chip select management
 - Clock polarity/phase configuration
 - Support for RP2040 (currently RP2350)
+- DMA integration for high-throughput transfers
 
 ## References
 
