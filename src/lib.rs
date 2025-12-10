@@ -57,7 +57,7 @@ pub struct PioSpiMaster<'d, PIO: Instance, const SM: usize> {
 
 impl<'d, PIO: Instance, const SM: usize> PioSpiMaster<'d, PIO, SM> {
     /// Creates a new PIO SPI Master
-    /// 
+    ///
     /// # Arguments
     /// * `common` - The PIO peripheral's common interface (for program loading and pin setup)
     /// * `sm` - State machine (takes ownership)
@@ -76,11 +76,11 @@ impl<'d, PIO: Instance, const SM: usize> PioSpiMaster<'d, PIO, SM> {
         // Load PIO program
         let program = get_pio_program(config.message_size);
         let _program = common.load_program(&program);
-        
+
         // Create configuration
         let mut cfg = Config::default();
         cfg.use_program(&_program, &[]);
-        
+
         // Set pin configurations
         // SET instructions control CLK (1 bit for state)
         // OUT instructions shift MOSI (1 bit per state)
@@ -88,33 +88,33 @@ impl<'d, PIO: Instance, const SM: usize> PioSpiMaster<'d, PIO, SM> {
         cfg.set_out_pins(&[mosi_pin]);
         cfg.set_set_pins(&[clk_pin]);
         cfg.set_in_pins(&[miso_pin]);
-        
+
         // Configure clock divider
         // Clock divider uses FixedU32<U8> format (8.8 bits)
         // Value is (clk_div - 1), converted to fixed-point
         let clk_val = (config.clk_div as u32 - 1).to_fixed();
         cfg.clock_divider = clk_val;
-        
+
         // Configure shift registers with auto-fill and dynamic thresholds
         // Out shift register: Pull from TX FIFO when 32 bits exhausted
         cfg.shift_out.auto_fill = true;
         cfg.shift_out.threshold = 32;
-        
+
         // In shift register: Push to RX FIFO when message_size bits accumulated
         // This prevents deadlock when message_size < 32
         // Note: Hardware threshold is clamped to 0-32, so for message_size > 32,
         // we clamp to 32 and push happens at 32-bit boundary
         cfg.shift_in.auto_fill = true;
         cfg.shift_in.threshold = config.message_size.min(32) as u8;
-        
+
         // Apply configuration and enable
         let mut sm = sm;
         sm.set_config(&cfg);
         sm.set_enable(true);
-        
+
         // Push message_size to TX FIFO for PIO program to use as bit counter
         sm.tx().push(config.message_size as u32);
-        
+
         Self {
             sm,
             _program,
@@ -147,28 +147,28 @@ impl<'d, PIO: Instance, const SM: usize> PioSpiMaster<'d, PIO, SM> {
         // Extract only the bits we need
         let mask = (1u64 << self.message_size) - 1;
         let data = data & mask;
-        
+
         // Calculate how many 32-bit words we need
         let words_needed = (self.message_size + 31) / 32; // Round up division
-        
+
         // Write TX FIFO words
         let tx_low = (data & 0xFFFFFFFF) as u32;
         self.sm.tx().push(tx_low);
-        
+
         if words_needed > 1 {
             let tx_high = ((data >> 32) & 0xFFFFFFFF) as u32;
             self.sm.tx().push(tx_high);
         }
-        
+
         // Read from RX FIFO
         let rx_low = self.sm.rx().pull();
         let mut result = rx_low as u64;
-        
+
         if words_needed > 1 {
             let rx_high = self.sm.rx().pull();
             result |= (rx_high as u64) << 32;
         }
-        
+
         // Mask result to message_size bits
         result & mask
     }
@@ -195,14 +195,14 @@ impl<'d, PIO: Instance, const SM: usize> PioSpiMaster<'d, PIO, SM> {
         // Extract only the bits we need
         let mask = (1u64 << self.message_size) - 1;
         let data = data & mask;
-        
+
         // Calculate how many 32-bit words we need
         let words_needed = (self.message_size + 31) / 32; // Round up division
-        
+
         // Write TX FIFO words
         let tx_low = (data & 0xFFFFFFFF) as u32;
         self.sm.tx().push(tx_low);
-        
+
         if words_needed > 1 {
             let tx_high = ((data >> 32) & 0xFFFFFFFF) as u32;
             self.sm.tx().push(tx_high);
@@ -211,7 +211,7 @@ impl<'d, PIO: Instance, const SM: usize> PioSpiMaster<'d, PIO, SM> {
 }
 
 /// Generates a unified PIO program supporting configurable message sizes (16-60 bits)
-/// 
+///
 /// The program uses a dynamic loop counter passed via TX FIFO, allowing different
 /// state machines to handle different message sizes without recompilation.
 ///
@@ -243,24 +243,25 @@ impl<'d, PIO: Instance, const SM: usize> PioSpiMaster<'d, PIO, SM> {
 /// - Data sampled on rising clock edge
 fn get_pio_program(_message_size: usize) -> pio::Program<32> {
     pio_asm!(
-        "set pins, 1",                  // Initialize CLK HIGH 
-        "pull block",                   // Load message_size (bit count) from TX FIFO
-        "mov y, osr",                   // Y = bit count for all transfers
-        ".wrap_target",                 // Loop returns here after each transfer
-        "mov x, y",                     // Copy bit count to X (write loop counter)
-        "loop_write:",                  // Write phase per-bit loop
-        "  out pins, 1",                // Shift 1 bit to MOSI (auto-fills OSR from TX FIFO)
-        "  set pins, 0",                // CLK goes low
-        "  set pins, 1",                // CLK goes high
-        "  jmp x--, loop_write",        // Repeat until all bits shifted
-        "out null, 32",                 // Clear remaining OSR bits (triggers auto-push)
-        "mov x, y",                     // Copy bit count to X (read loop counter)
-        "loop_read:",                   // Read phase per-bit loop
-        "  in pins, 1",                 // Shift 1 bit from MISO (auto-fills ISR)
-        "  set pins, 0",                // CLK goes low
-        "  set pins, 1",                // CLK goes high
-        "  jmp x--, loop_read",         // Repeat until all bits read
-        "push noblock",                 // Push any remaining read bits (if < 32)
-        ".wrap",                        // Loop back to wrap_target
-    ).program
+        "set pins, 1",           // Initialize CLK HIGH
+        "pull block",            // Load message_size (bit count) from TX FIFO
+        "mov y, osr",            // Y = bit count for all transfers
+        ".wrap_target",          // Loop returns here after each transfer
+        "mov x, y",              // Copy bit count to X (write loop counter)
+        "loop_write:",           // Write phase per-bit loop
+        "  out pins, 1",         // Shift 1 bit to MOSI (auto-fills OSR from TX FIFO)
+        "  set pins, 0",         // CLK goes low
+        "  set pins, 1",         // CLK goes high
+        "  jmp x--, loop_write", // Repeat until all bits shifted
+        "out null, 32",          // Clear remaining OSR bits (triggers auto-push)
+        "mov x, y",              // Copy bit count to X (read loop counter)
+        "loop_read:",            // Read phase per-bit loop
+        "  in pins, 1",          // Shift 1 bit from MISO (auto-fills ISR)
+        "  set pins, 0",         // CLK goes low
+        "  set pins, 1",         // CLK goes high
+        "  jmp x--, loop_read",  // Repeat until all bits read
+        "push noblock",          // Push any remaining read bits (if < 32)
+        ".wrap",                 // Loop back to wrap_target
+    )
+    .program
 }

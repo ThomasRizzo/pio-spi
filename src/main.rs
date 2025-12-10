@@ -3,9 +3,9 @@
 
 use defmt::info;
 use embassy_executor::Spawner;
+use embassy_rp::bind_interrupts;
 use embassy_rp::peripherals::PIO0;
 use embassy_rp::pio::Pio;
-use embassy_rp::bind_interrupts;
 use embassy_time::Timer;
 use pio_spi::{PioSpiMaster, SpiMasterConfig};
 use {defmt_rtt as _, panic_probe as _};
@@ -21,7 +21,13 @@ async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
     // Initialize PIO with pins
-    let Pio { mut common, sm0, sm1, sm2, .. } = Pio::new(p.PIO0, Irqs);
+    let Pio {
+        mut common,
+        sm0,
+        sm1,
+        sm2,
+        ..
+    } = Pio::new(p.PIO0, Irqs);
 
     // Create PIO pins from GPIO pins
     let clk_pin = common.make_pio_pin(p.PIN_2);
@@ -36,14 +42,8 @@ async fn main(_spawner: Spawner) {
             message_size: 16,
         };
 
-        let mut spi = PioSpiMaster::<PIO0, 0>::new(
-            &mut common,
-            sm0,
-            &clk_pin,
-            &mosi_pin,
-            &miso_pin,
-            config,
-        );
+        let mut spi =
+            PioSpiMaster::<PIO0, 0>::new(&mut common, sm0, &clk_pin, &mosi_pin, &miso_pin, config);
 
         let data = 0xABCD_u16 as u64;
         info!("Sending: 0x{:04x}", data);
@@ -60,14 +60,8 @@ async fn main(_spawner: Spawner) {
             message_size: 50,
         };
 
-        let mut spi = PioSpiMaster::<PIO0, 1>::new(
-            &mut common,
-            sm1,
-            &clk_pin,
-            &mosi_pin,
-            &miso_pin,
-            config,
-        );
+        let mut spi =
+            PioSpiMaster::<PIO0, 1>::new(&mut common, sm1, &clk_pin, &mosi_pin, &miso_pin, config);
 
         let data = 0x0000000001234567_89u64;
         info!("Sending: 0x{:012x}", data);
@@ -84,14 +78,8 @@ async fn main(_spawner: Spawner) {
             message_size: 60,
         };
 
-        let mut spi = PioSpiMaster::<PIO0, 2>::new(
-            &mut common,
-            sm2,
-            &clk_pin,
-            &mosi_pin,
-            &miso_pin,
-            config,
-        );
+        let mut spi =
+            PioSpiMaster::<PIO0, 2>::new(&mut common, sm2, &clk_pin, &mosi_pin, &miso_pin, config);
 
         let data = 0x0FEDCBA987654321_u64;
         info!("Sending: 0x{:015x}", data);
