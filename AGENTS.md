@@ -134,12 +134,17 @@ For example: `bd create --help` shows `--parent`, `--deps`, `--assignee`, etc.
 cargo fmt
 ```
 
-2. **Build project**:
+2. **Check warnings**:
+```bash
+cargo clippy
+```
+
+3. **Build project**:
 ```bash
 cargo build
 ```
 
-Confirm `Finished` with exit code 0. Never commit code that doesn't build or is improperly formatted.
+Confirm `Finished` with exit code 0. Never commit code that doesn't build, is improperly formatted, or has clippy warnings.
 
 ### Important Rules
 
