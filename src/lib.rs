@@ -149,7 +149,7 @@ impl<'d, PIO: Instance, const SM: usize> PioSpiMaster<'d, PIO, SM> {
         let data = data & mask;
 
         // Calculate how many 32-bit words we need
-        let words_needed = (self.message_size + 31) / 32; // Round up division
+        let words_needed = self.message_size.div_ceil(32);
 
         // Write TX FIFO words
         let tx_low = (data & 0xFFFFFFFF) as u32;
@@ -197,7 +197,7 @@ impl<'d, PIO: Instance, const SM: usize> PioSpiMaster<'d, PIO, SM> {
         let data = data & mask;
 
         // Calculate how many 32-bit words we need
-        let words_needed = (self.message_size + 31) / 32; // Round up division
+        let words_needed = self.message_size.div_ceil(32);
 
         // Write TX FIFO words
         let tx_low = (data & 0xFFFFFFFF) as u32;

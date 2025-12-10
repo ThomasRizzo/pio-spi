@@ -63,7 +63,7 @@ async fn main(_spawner: Spawner) {
         let mut spi =
             PioSpiMaster::<PIO0, 1>::new(&mut common, sm1, &clk_pin, &mosi_pin, &miso_pin, config);
 
-        let data = 0x0000000001234567_89u64;
+        let data = 0x0000_0000_0001_2345_6789_u64;
         info!("Sending: 0x{:012x}", data);
         let response = spi.transfer(data);
         info!("Received: 0x{:012x}", response);
